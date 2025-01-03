@@ -91,7 +91,7 @@ Consider:
 
     try:
         response = openai.Completion.create(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             prompt=prompt,
             temperature=0.7,
             max_tokens=1000
@@ -146,7 +146,7 @@ Provide analysis in this format:
 
     try:
         response = openai.Completion.create(
-            model="text-davinci-003",
+            model="gpt-3.5-turbo-instruct",
             prompt=prompt,
             temperature=0.7,
             max_tokens=1000
@@ -458,7 +458,7 @@ def schedule_tasks():
     
     # Use OpenAI to suggest task scheduling
     response = openai.Completion.create(
-        model="text-davinci-003",
+        model="gpt-3.5-turbo-instruct",
         prompt=f"Please schedule these tasks around the existing calendar events: {json.dumps(schedule_request)}",
         temperature=0.7,
         max_tokens=1000
