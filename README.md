@@ -66,15 +66,45 @@ python reset_db.py
 
 ## Docker Deployment
 
-1. Build the Docker image:
+1. Clone the repository:
 ```bash
-docker build -t smart-scheduler .
+git clone https://github.com/waynehead99/SmartSchedular.git
+cd SmartSchedular
 ```
 
-2. Run the container:
+2. Set up environment variables:
 ```bash
-docker run -d -p 5000:5000 --env-file .env smart-scheduler
+# Copy the example environment file
+cp .env.example .env
+
+# Edit the .env file with your settings
+# Make sure to set your OpenAI API key and other required variables
+nano .env  # or use your preferred text editor
 ```
+
+Required environment variables:
+- `OPENAI_API_KEY`: Your OpenAI API key
+- `FLASK_APP`: Set to `app.py`
+- `FLASK_ENV`: Set to `production` for deployment
+- `SECRET_KEY`: Your secret key for Flask sessions
+- `SQLALCHEMY_DATABASE_URI`: SQLite database path (default: `sqlite:///instance/scheduler.db`)
+
+3. Build and run with Docker:
+```bash
+# Build the Docker image
+docker build -t smart-scheduler .
+
+# Run the container
+docker run -d -p 5000:5000 --env-file .env smart-scheduler
+
+# Initialize the database (replace <container_id> with your container ID)
+docker ps  # get the container ID
+docker exec <container_id> python reset_db.py
+```
+
+4. Access the application:
+- Open your browser and navigate to `http://<your-server-ip>:5000`
+- The API endpoints will be available at `http://<your-server-ip>:5000/api/*`
 
 ## Usage
 
