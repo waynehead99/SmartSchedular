@@ -44,8 +44,8 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 # Initialize database
 db.init_app(app)
 
-# Configure OpenAI
-client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+# Initialize OpenAI
+openai.api_key = os.getenv('OPENAI_API_KEY')
 
 def generate_schedule_suggestions(tasks, calendar_events):
     """Generate AI-powered schedule suggestions based on tasks and existing calendar"""
@@ -90,22 +90,16 @@ Consider:
 4. Optimal time of day for different task types"""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{
-                "role": "system",
-                "content": "You are a smart scheduling assistant. Provide suggestions in the exact format specified."
-            }, {
-                "role": "user",
-                "content": prompt
-            }],
+        response = openai.Completion.create(
+            model="text-davinci-003",
+            prompt=prompt,
             temperature=0.7,
             max_tokens=1000
         )
         
         # Parse the suggestions into a structured format
         suggestions = []
-        content = response.choices[0].message.content
+        content = response.choices[0].text
         suggestion_blocks = content.split('SUGGESTION\n')[1:]  # Skip the first empty split
         
         for block in suggestion_blocks:
@@ -151,19 +145,13 @@ Provide analysis in this format:
 1. [Task] depends on [Dependencies] because [Reasoning]"""
 
     try:
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[{
-                "role": "system",
-                "content": "You are a project management expert that identifies task dependencies and optimal ordering."
-            }, {
-                "role": "user",
-                "content": prompt
-            }],
+        response = openai.Completion.create(
+            model="text-davinci-003",
+            prompt=prompt,
             temperature=0.7,
             max_tokens=1000
         )
-        return response.choices[0].message.content
+        return response.choices[0].text
     except Exception as e:
         return f"Error analyzing dependencies: {str(e)}"
 
@@ -469,20 +457,14 @@ def schedule_tasks():
     }
     
     # Use OpenAI to suggest task scheduling
-    response = client.chat.completions.create(
-        model="gpt-4",
-        messages=[{
-            "role": "system",
-            "content": "You are a scheduling assistant. Given a list of calendar events and tasks, suggest optimal times for completing the tasks."
-        }, {
-            "role": "user",
-            "content": f"Please schedule these tasks around the existing calendar events: {json.dumps(schedule_request)}"
-        }],
+    response = openai.Completion.create(
+        model="text-davinci-003",
+        prompt=f"Please schedule these tasks around the existing calendar events: {json.dumps(schedule_request)}",
         temperature=0.7,
         max_tokens=1000
     )
     
-    return jsonify({'suggestions': response.choices[0].message.content})
+    return jsonify({'suggestions': response.choices[0].text})
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
