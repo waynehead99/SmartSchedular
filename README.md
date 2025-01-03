@@ -38,7 +38,7 @@ An AI-powered task and project management system that intelligently schedules ta
 
 1. Clone the repository:
 ```bash
-git clone https://github.com/yourusername/smart_scheduler.git
+git clone https://github.com/waynehead99/smart_scheduler.git
 cd smart_scheduler
 ```
 
