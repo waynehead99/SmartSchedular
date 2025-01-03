@@ -1,0 +1,88 @@
+body {
+    background-color: #f8f9fa;
+}
+
+.card {
+    box-shadow: 0 0.125rem 0.25rem rgba(0, 0, 0, 0.075);
+    margin-bottom: 1rem;
+}
+
+#calendar {
+    height: 700px;
+}
+
+.project-item, .task-item {
+    padding: 0.75rem;
+    margin-bottom: 0.5rem;
+    border: 1px solid #dee2e6;
+    border-radius: 0.25rem;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+    background-color: white;
+    border-left-width: 4px;
+}
+
+.project-item:hover, .task-item:hover {
+    background-color: #f8f9fa;
+    transform: translateY(-1px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.project-item h5, .task-item h6 {
+    font-size: 1rem;
+    margin: 0;
+    color: #2c3e50;
+}
+
+.project-details, .task-details {
+    overflow: hidden;
+    transition: all 0.3s ease-in-out;
+}
+
+.project-details.show, .task-details.show {
+    margin-top: 0.75rem;
+}
+
+.project-details p, .task-details p {
+    margin: 0.5rem 0;
+    color: #6c757d;
+    font-size: 0.875rem;
+}
+
+.btn-link {
+    text-decoration: none;
+    color: #6c757d;
+    transition: color 0.2s ease-in-out;
+}
+
+.btn-link:hover {
+    color: #2c3e50;
+}
+
+.progress {
+    height: 0.5rem;
+    background-color: #f0f0f0;
+    font-size: 0.75rem;
+    line-height: 0.5rem;
+    color: white;
+}
+
+.badge {
+    font-size: 0.75rem;
+    padding: 0.25rem 0.5rem;
+    font-weight: 500;
+}
+
+.task-item .badge {
+    margin-right: 0;
+}
+
+.task-item small {
+    display: block;
+    margin-top: 0.5rem;
+}
+
+.task-details small {
+    display: block;
+    color: #6c757d;
+}
