@@ -5,6 +5,7 @@ This module defines the SQLAlchemy models for:
 - Projects: Representing high-level work items with priorities and color coding
 - Tasks: Individual work items associated with projects
 - Calendar: Events and scheduled tasks
+- Status Updates: Task status updates
 
 Each model includes priority handling and proper relationship definitions.
 """
@@ -53,6 +54,7 @@ class Task(db.Model):
         id (int): Primary key
         title (str): Task title
         description (str): Task description
+        ticket_number (str): Task ticket number
         status (str): Current status (Not Started, In Progress, Completed)
         priority (int): Task priority (1=High, 2=Medium, 3=Low)
         estimated_duration (int): Estimated duration in minutes
@@ -62,11 +64,13 @@ class Task(db.Model):
         actual_duration (int): Actual time spent on task in minutes
         started_at (datetime): When the task was started
         completed_at (datetime): When the task was completed
+        status_updates (relationship): Task status updates
     """
     
     id = db.Column(db.Integer, primary_key=True)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
+    ticket_number = db.Column(db.String(50))  # New field for ticket numbers
     status = db.Column(db.String(50), default='Not Started')
     priority = db.Column(db.Integer, default=2)  # 1: High, 2: Medium, 3: Low
     estimated_duration = db.Column(db.Integer)  # in minutes
@@ -84,6 +88,9 @@ class Task(db.Model):
         secondaryjoin='Task.id==task_dependencies.c.prerequisite_task_id',
         backref='dependent_tasks'
     )
+    
+    # Add relationship to status updates
+    status_updates = db.relationship('StatusUpdate', backref='task', lazy=True, order_by='StatusUpdate.created_at.desc()')
     
     @property
     def priority_label(self):
@@ -104,11 +111,45 @@ class Task(db.Model):
                 return round(progress)
         return 50  # Default for "In Progress" without time tracking
 
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'title': self.title,
+            'description': self.description,
+            'ticket_number': self.ticket_number,
+            'status': self.status,
+            'priority': self.priority,
+            'priority_label': self.priority_label,
+            'estimated_duration': self.estimated_duration,
+            'project_id': self.project_id,
+            'project_name': self.project.name if self.project else None,
+            'created_at': self.created_at.isoformat(),
+            'started_at': self.started_at.isoformat() if self.started_at else None,
+            'completed_at': self.completed_at.isoformat() if self.completed_at else None,
+            'status_updates': [update.to_dict() for update in self.status_updates]
+        }
+
 # Task Dependencies Association Table
 task_dependencies = db.Table('task_dependencies',
     db.Column('dependent_task_id', db.Integer, db.ForeignKey('task.id'), primary_key=True),
     db.Column('prerequisite_task_id', db.Integer, db.ForeignKey('task.id'), primary_key=True)
 )
+
+class StatusUpdate(db.Model):
+    """Model for task status updates"""
+    id = db.Column(db.Integer, primary_key=True)
+    task_id = db.Column(db.Integer, db.ForeignKey('task.id'), nullable=False)
+    status = db.Column(db.String(50), nullable=False)
+    notes = db.Column(db.Text)
+    created_at = db.Column(db.DateTime, default=datetime.utcnow)
+    
+    def to_dict(self):
+        return {
+            'id': self.id,
+            'status': self.status,
+            'notes': self.notes,
+            'created_at': self.created_at.isoformat()
+        }
 
 class Calendar(db.Model):
     """

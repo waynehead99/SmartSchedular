@@ -146,3 +146,148 @@ body {
 #backups-list .btn {
     min-width: 100px;
 }
+
+/* Status History Styles */
+.status-history-container {
+    max-height: 300px;
+    overflow-y: auto;
+    padding: 10px;
+    border: 1px solid #dee2e6;
+    border-radius: 4px;
+}
+
+.status-timeline {
+    position: relative;
+    padding-left: 20px;
+}
+
+.status-timeline::before {
+    content: '';
+    position: absolute;
+    left: 0;
+    top: 0;
+    bottom: 0;
+    width: 2px;
+    background-color: #dee2e6;
+}
+
+.status-update-item {
+    position: relative;
+    margin-bottom: 15px;
+    padding-left: 15px;
+}
+
+.status-update-item::before {
+    content: '';
+    position: absolute;
+    left: -4px;
+    top: 8px;
+    width: 10px;
+    height: 10px;
+    border-radius: 50%;
+    background-color: #fff;
+    border: 2px solid #6c757d;
+}
+
+.status-badge {
+    display: inline-block;
+    padding: 2px 8px;
+    border-radius: 12px;
+    font-size: 0.875rem;
+    font-weight: 500;
+    margin-bottom: 4px;
+}
+
+.status-details {
+    margin-left: 4px;
+}
+
+.status-time {
+    font-size: 0.875rem;
+    color: #6c757d;
+    margin-bottom: 2px;
+}
+
+.status-notes {
+    font-size: 0.875rem;
+    color: #495057;
+    background-color: #f8f9fa;
+    padding: 4px 8px;
+    border-radius: 4px;
+    margin-top: 4px;
+}
+
+/* Update status colors */
+.bg-not-started {
+    background-color: #e9ecef;
+    color: #495057;
+}
+
+.bg-in-progress {
+    background-color: #cff4fc;
+    color: #055160;
+}
+
+.bg-on-hold {
+    background-color: #fff3cd;
+    color: #664d03;
+}
+
+.bg-completed {
+    background-color: #d1e7dd;
+    color: #0f5132;
+}
+
+/* Status Report Styles */
+.markdown-content {
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+    line-height: 1.6;
+    color: #333;
+    padding: 1rem;
+    max-height: 70vh;
+    overflow-y: auto;
+}
+
+.markdown-content h1 {
+    font-size: 1.8rem;
+    color: #2c3e50;
+    margin-bottom: 1rem;
+    padding-bottom: 0.5rem;
+    border-bottom: 2px solid #eee;
+}
+
+.markdown-content h2 {
+    font-size: 1.5rem;
+    color: #34495e;
+    margin-top: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.markdown-content h3 {
+    font-size: 1.2rem;
+    color: #455a64;
+    margin-top: 1rem;
+}
+
+.markdown-content ul {
+    padding-left: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.markdown-content li {
+    margin-bottom: 0.5rem;
+}
+
+.markdown-content code {
+    background-color: #f8f9fa;
+    padding: 0.2rem 0.4rem;
+    border-radius: 3px;
+    font-size: 0.9em;
+}
+
+.markdown-content blockquote {
+    border-left: 4px solid #e9ecef;
+    padding-left: 1rem;
+    margin-left: 0;
+    color: #6c757d;
+}

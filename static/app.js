@@ -1,8 +1,25 @@
 // Calendar initialization
 let calendar;
 
+// Initialize event listeners when the DOM is loaded
 document.addEventListener('DOMContentLoaded', function() {
-    // Initialize calendar
+    loadTasks();
+    initializeCalendar();
+    setupEventListeners();
+});
+
+function setupEventListeners() {
+    // Status Report button
+    const statusReportBtn = document.getElementById('generateStatusReportBtn');
+    if (statusReportBtn) {
+        statusReportBtn.addEventListener('click', generateStatusReport);
+    }
+    
+    // Other event listeners...
+}
+
+// Initialize calendar
+function initializeCalendar() {
     const calendarEl = document.getElementById('calendar');
     calendar = new FullCalendar.Calendar(calendarEl, {
         initialView: 'timeGridWeek',
@@ -58,12 +75,11 @@ document.addEventListener('DOMContentLoaded', function() {
         }
     });
     calendar.render();
+}
 
-    // Load initial data
-    loadProjects();
-    loadTasks();
-    loadBackups();
-});
+// Load initial data
+loadProjects();
+loadBackups();
 
 // Initialize Bootstrap tooltips and popovers
 const tooltipTriggerList = [].slice.call(document.querySelectorAll('[data-bs-toggle="tooltip"]'));
@@ -143,42 +159,101 @@ async function showAddTaskModal() {
 }
 
 function showEditTaskModal(task) {
-    document.getElementById('taskModalTitle').textContent = 'Edit Task';
-    document.getElementById('taskId').value = task.id;
-    document.getElementById('taskTitle').value = task.title;
-    document.getElementById('taskDescription').value = task.description || '';
-    document.getElementById('taskDuration').value = task.estimated_duration;
-    document.getElementById('taskPriority').value = task.priority;
-    document.getElementById('taskStatus').value = task.status;
-    document.getElementById('deleteTaskBtn').style.display = 'block';
+    const modal = document.getElementById('editTaskModal');
+    const form = modal.querySelector('form');
     
-    // Load and set project
-    loadProjectsForTaskModal().then(() => {
-        document.getElementById('taskProject').value = task.project_id;
-    });
+    // Populate form fields
+    form.querySelector('#editTaskTitle').value = task.title;
+    form.querySelector('#editTaskDescription').value = task.description;
+    form.querySelector('#editTaskTicketNumber').value = task.ticket_number || '';
+    form.querySelector('#editTaskPriority').value = task.priority;
+    form.querySelector('#editTaskStatus').value = task.status;
+    form.querySelector('#editTaskDuration').value = task.estimated_duration || '';
     
-    // Load and set dependencies
-    loadTasksForDependencies(task.id).then(() => {
-        const dependencySelect = document.getElementById('taskDependencies');
-        task.dependencies.forEach(depId => {
-            const option = dependencySelect.querySelector(`option[value="${depId}"]`);
-            if (option) option.selected = true;
+    // Load and display status history
+    loadStatusHistory(task.id);
+    
+    // Store task ID for form submission
+    form.dataset.taskId = task.id;
+    
+    // Show modal
+    const modalInstance = new bootstrap.Modal(modal);
+    modalInstance.show();
+}
+
+function loadStatusHistory(taskId) {
+    fetch(`/api/tasks/${taskId}/status-history`)
+        .then(response => response.json())
+        .then(data => {
+            const historyContainer = document.getElementById('statusHistory');
+            historyContainer.innerHTML = '';
+            
+            if (data.status_updates && data.status_updates.length > 0) {
+                const timeline = document.createElement('div');
+                timeline.className = 'status-timeline';
+                
+                data.status_updates.forEach(update => {
+                    const updateItem = document.createElement('div');
+                    updateItem.className = 'status-update-item';
+                    
+                    const date = new Date(update.created_at);
+                    updateItem.innerHTML = `
+                        <div class="status-badge ${getStatusColor(update.status)}">
+                            ${update.status}
+                        </div>
+                        <div class="status-details">
+                            <div class="status-time">
+                                ${date.toLocaleString()}
+                            </div>
+                            ${update.notes ? `<div class="status-notes">${update.notes}</div>` : ''}
+                        </div>
+                    `;
+                    
+                    timeline.appendChild(updateItem);
+                });
+                
+                historyContainer.appendChild(timeline);
+            } else {
+                historyContainer.innerHTML = '<p class="text-muted">No status updates yet</p>';
+            }
+        })
+        .catch(error => {
+            console.error('Error loading status history:', error);
+            showToast('Error', 'Failed to load status history', 'error');
         });
+}
+
+function updateTaskStatus() {
+    const modal = document.getElementById('editTaskModal');
+    const form = modal.querySelector('form');
+    const taskId = form.dataset.taskId;
+    const status = form.querySelector('#editTaskStatus').value;
+    const notes = form.querySelector('#statusNotes').value;
+    
+    fetch(`/api/tasks/${taskId}/status`, {
+        method: 'POST',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify({
+            status: status,
+            notes: notes
+        })
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        showToast('Success', 'Status updated successfully', 'success');
+        loadTasks();  // Refresh task list
+        loadStatusHistory(taskId);  // Refresh status history
+        form.querySelector('#statusNotes').value = '';  // Clear notes field
+    })
+    .catch(error => {
+        console.error('Error updating status:', error);
+        showToast('Error', 'Failed to update status', 'error');
     });
-    
-    // Show time tracking info if available
-    const timeTracking = document.getElementById('taskTimeTracking');
-    if (task.started_at || task.completed_at || task.actual_duration) {
-        timeTracking.style.display = 'block';
-        document.getElementById('taskStartedAt').textContent = task.started_at ? new Date(task.started_at).toLocaleString() : '-';
-        document.getElementById('taskCompletedAt').textContent = task.completed_at ? new Date(task.completed_at).toLocaleString() : '-';
-        document.getElementById('taskActualDuration').textContent = task.actual_duration ? `${task.actual_duration} minutes` : '-';
-        document.getElementById('taskProgressBar').style.width = `${task.progress}%`;
-    } else {
-        timeTracking.style.display = 'none';
-    }
-    
-    new bootstrap.Modal(document.getElementById('addTaskModal')).show();
 }
 
 async function loadTasksForDependencies(excludeTaskId = null) {
@@ -220,47 +295,39 @@ async function loadProjectsForTaskModal() {
 }
 
 async function saveTask() {
-    const taskId = document.getElementById('taskId').value;
-    const method = taskId ? 'PUT' : 'POST';
-    const url = taskId ? `/api/tasks/${taskId}` : '/api/tasks';
+    const modal = document.getElementById('editTaskModal');
+    const form = modal.querySelector('form');
+    const taskId = form.dataset.taskId;
     
-    const projectId = document.getElementById('taskProject').value;
-    if (!projectId) {
-        showToast('Error', 'Please select a project', 'error');
-        return;
-    }
-    
-    const taskData = {
-        title: document.getElementById('taskTitle').value,
-        description: document.getElementById('taskDescription').value,
-        project_id: parseInt(projectId),
-        estimated_duration: parseInt(document.getElementById('taskDuration').value),
-        status: document.getElementById('taskStatus').value,
-        priority: parseInt(document.getElementById('taskPriority').value),
-        dependencies: Array.from(document.getElementById('taskDependencies').selectedOptions).map(opt => parseInt(opt.value))
+    const data = {
+        title: form.querySelector('#editTaskTitle').value,
+        description: form.querySelector('#editTaskDescription').value,
+        ticket_number: form.querySelector('#editTaskTicketNumber').value,
+        priority: parseInt(form.querySelector('#editTaskPriority').value),
+        status: form.querySelector('#editTaskStatus').value,
+        estimated_duration: parseInt(form.querySelector('#editTaskDuration').value) || null
     };
     
-    try {
-        const response = await fetch(url, {
-            method: method,
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(taskData)
-        });
-        
-        if (response.ok) {
-            const result = await response.json();
-            showToast('Success', `Task ${taskId ? 'updated' : 'created'} successfully`, 'success');
-            bootstrap.Modal.getInstance(document.getElementById('addTaskModal')).hide();
-            loadTasks();
-            calendar.refetchEvents();
-        } else {
-            const error = await response.json();
-            showToast('Error', error.message || 'Failed to save task', 'error');
+    fetch(`/api/tasks/${taskId}`, {
+        method: 'PATCH',
+        headers: {
+            'Content-Type': 'application/json'
+        },
+        body: JSON.stringify(data)
+    })
+    .then(response => response.json())
+    .then(data => {
+        if (data.error) {
+            throw new Error(data.error);
         }
-    } catch (error) {
+        showToast('Success', 'Task updated successfully', 'success');
+        loadTasks();  // Refresh task list
+        bootstrap.Modal.getInstance(modal).hide();
+    })
+    .catch(error => {
         console.error('Error saving task:', error);
-        showToast('Error', 'Failed to save task', 'error');
-    }
+        showToast('Error', 'Failed to save task changes', 'error');
+    });
 }
 
 async function deleteTask() {
@@ -404,7 +471,7 @@ function addScheduleButton(taskItem, task) {
     scheduleButton.innerHTML = '<i class="fas fa-calendar-alt"></i>';
     scheduleButton.title = 'Get AI scheduling suggestions';
     
-    scheduleButton.addEventListener('click', async (e) => {
+    scheduleButton.addEventListener('click', async () => {
         e.stopPropagation(); // Stop event from bubbling up
         try {
             const response = await fetch('/api/schedule/suggest', {
@@ -935,7 +1002,79 @@ async function getAIAnalysis() {
     }
 }
 
-function showToast(title, message, type = 'info') {
+// Loading state management
+let loadingToast = null;
+
+function showLoadingToast(message) {
+    hideLoadingToast(); // Clear any existing toast
+    loadingToast = showToast('Loading', message, 'info', false);
+}
+
+function hideLoadingToast() {
+    if (loadingToast) {
+        loadingToast.hide();
+        loadingToast = null;
+    }
+}
+
+async function generateStatusReport() {
+    let loadingToast = null;
+    try {
+        loadingToast = showToast('Loading', 'Generating status report...', 'info', false);
+        console.log('Generating status report...'); // Debug log
+        
+        const response = await fetch('/api/status-report');
+        console.log('Response received:', response.status); // Debug log
+        
+        if (!response.ok) {
+            throw new Error(`Failed to generate status report: ${response.status}`);
+        }
+        
+        const data = await response.json();
+        console.log('Data received:', data); // Debug log
+        
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Convert markdown to HTML using marked
+        const reportHtml = marked.parse(data.report);
+        
+        // Display the report in the modal
+        const reportContent = document.getElementById('statusReportContent');
+        reportContent.innerHTML = reportHtml;
+        
+        // Show the modal
+        const modal = document.getElementById('statusReportModal');
+        const bootstrapModal = new bootstrap.Modal(modal);
+        bootstrapModal.show();
+        
+        if (loadingToast) {
+            loadingToast.hide();
+        }
+        showToast('Success', 'Status report generated successfully', 'success');
+    } catch (error) {
+        console.error('Error generating status report:', error);
+        if (loadingToast) {
+            loadingToast.hide();
+        }
+        showToast('Error', error.message || 'Failed to generate status report', 'error');
+    }
+}
+
+async function copyStatusReport() {
+    try {
+        const reportContent = document.getElementById('statusReportContent');
+        const textContent = reportContent.innerText;
+        await navigator.clipboard.writeText(textContent);
+        showToast('Success', 'Report copied to clipboard', 'success');
+    } catch (error) {
+        console.error('Error copying report:', error);
+        showToast('Error', 'Failed to copy report', 'error');
+    }
+}
+
+function showToast(title, message, type = 'info', autohide = true) {
     const toast = document.createElement('div');
     toast.className = `toast align-items-center text-white bg-${type} border-0`;
     toast.setAttribute('role', 'alert');
@@ -945,20 +1084,24 @@ function showToast(title, message, type = 'info') {
     toast.innerHTML = `
         <div class="d-flex">
             <div class="toast-body">
-                <strong>${title}</strong><br>
-                ${message}
+                <strong>${title}</strong>: ${message}
             </div>
-            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast"></button>
+            <button type="button" class="btn-close btn-close-white me-2 m-auto" data-bs-dismiss="toast" aria-label="Close"></button>
         </div>
     `;
     
     document.body.appendChild(toast);
-    const bsToast = new bootstrap.Toast(toast);
+    const bsToast = new bootstrap.Toast(toast, { 
+        autohide: autohide,
+        delay: 3000  // Always set a delay, even if autohide is false
+    });
     bsToast.show();
     
     toast.addEventListener('hidden.bs.toast', () => {
         document.body.removeChild(toast);
     });
+    
+    return bsToast;
 }
 
 function closeAISuggestions() {

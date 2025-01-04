@@ -25,7 +25,7 @@ from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
-from models import db, Project, Task, Calendar
+from models import db, Project, Task, Calendar, StatusUpdate
 import openai
 from backup_utils import create_backup, restore_backup, list_backups
 from dotenv import load_dotenv
@@ -70,20 +70,30 @@ def generate_schedule_suggestions(tasks, calendar_events):
         current_time = datetime.now(pytz.UTC)  # Make current time timezone-aware
         
         if calendar_events:
+            # Convert event times to UTC for comparison
+            calendar_events = [
+                {
+                    'start_time': event.start_time.replace(tzinfo=pytz.UTC) if event.start_time.tzinfo is None else event.start_time.astimezone(pytz.UTC),
+                    'end_time': event.end_time.replace(tzinfo=pytz.UTC) if event.end_time.tzinfo is None else event.end_time.astimezone(pytz.UTC),
+                    'title': event.title
+                }
+                for event in calendar_events
+            ]
+            
             # Check for slot before first event
-            if current_time < calendar_events[0].start_time:
-                duration = int((calendar_events[0].start_time - current_time).total_seconds() / 60)
+            if current_time < calendar_events[0]['start_time']:
+                duration = int((calendar_events[0]['start_time'] - current_time).total_seconds() / 60)
                 if duration >= 15 and not is_working_hours(current_time):  # Only include slots of 15 minutes or more
                     available_slots.append({
                         'start': current_time,
-                        'end': calendar_events[0].start_time,
+                        'end': calendar_events[0]['start_time'],
                         'duration': duration
                     })
             
             # Check for slots between events
             for i in range(len(calendar_events) - 1):
-                slot_start = calendar_events[i].end_time
-                slot_end = calendar_events[i + 1].start_time
+                slot_start = calendar_events[i]['end_time']
+                slot_end = calendar_events[i + 1]['start_time']
                 if slot_start < slot_end and not is_working_hours(slot_start):
                     duration = int((slot_end - slot_start).total_seconds() / 60)
                     if duration >= 15:  # Only include slots of 15 minutes or more
@@ -95,10 +105,10 @@ def generate_schedule_suggestions(tasks, calendar_events):
             
             # Check for slot after last event
             last_event = calendar_events[-1]
-            if last_event.end_time > current_time and not is_working_hours(last_event.end_time):
+            if last_event['end_time'] > current_time and not is_working_hours(last_event['end_time']):
                 available_slots.append({
-                    'start': last_event.end_time,
-                    'end': last_event.end_time + timedelta(hours=8),  # Consider next 8 hours
+                    'start': last_event['end_time'],
+                    'end': last_event['end_time'] + timedelta(hours=8),  # Consider next 8 hours
                     'duration': 480  # 8 hours in minutes
                 })
         else:
@@ -155,7 +165,7 @@ def generate_schedule_suggestions(tasks, calendar_events):
         ])
         
         events_text = "\n".join([
-            f"Busy: {event.title} ({event.start_time.strftime('%Y-%m-%d %H:%M')} - {event.end_time.strftime('%Y-%m-%d %H:%M')})"
+            f"Busy: {event['title']} ({event['start_time'].strftime('%Y-%m-%d %H:%M')} - {event['end_time'].strftime('%Y-%m-%d %H:%M')})"
             for event in calendar_events
         ])
         
@@ -221,6 +231,7 @@ END"""
                 try:
                     suggested_time = datetime.strptime(time_line, '%Y-%m-%d %H:%M')
                     suggested_time = pytz.timezone('America/Denver').localize(suggested_time)
+                    suggested_time_utc = suggested_time.astimezone(pytz.UTC)
                     
                     # Double-check that the suggested time is outside working hours
                     if not is_working_hours(suggested_time):
@@ -229,8 +240,8 @@ END"""
                             duration = task.estimated_duration or 30
                             # Check if the suggestion fits in any available slot
                             for slot in available_slots:
-                                if (slot['start'] <= suggested_time and 
-                                    suggested_time + timedelta(minutes=duration) <= slot['end']):
+                                if (slot['start'] <= suggested_time_utc and 
+                                    suggested_time_utc + timedelta(minutes=duration) <= slot['end']):
                                     suggestions.append({
                                         'task': task_line,
                                         'suggested_time': time_line,
@@ -245,46 +256,6 @@ END"""
     except Exception as e:
         app.logger.error(f"Error generating schedule suggestions: {str(e)}")
         return []
-
-def analyze_task_dependencies(tasks):
-    """Analyze tasks to suggest dependencies and optimal ordering"""
-    try:
-        # Format tasks for the prompt
-        tasks_text = "\n".join([
-            f"Task: {task.title}\nDescription: {task.description}\nPriority: {task.priority_label}\n"
-            for task in tasks if task.status != 'Completed'
-        ])
-        
-        system_prompt = """You are an AI project management assistant that specializes in analyzing task dependencies and suggesting optimal task ordering.
-Your goal is to identify logical dependencies between tasks and suggest the most efficient way to complete them."""
-
-        user_prompt = f"""Analyze these tasks and suggest:
-1. Potential dependencies between tasks
-2. Optimal ordering for completion
-3. Any tasks that could be grouped or done in parallel
-
-Tasks:
-{tasks_text}
-
-Provide analysis in this format:
-1. Dependencies: [Task] depends on [Task] because [Reason]
-2. Optimal Order: [Task] -> [Task] -> [Task]
-3. Parallel Tasks: [Task] and [Task] can be done together"""
-
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        return response.choices[0].message.content.strip()
-    except Exception as e:
-        app.logger.error(f"Error analyzing task dependencies: {str(e)}")
-        return "Error analyzing task dependencies. Please try again later."
 
 @app.route('/')
 def home():
@@ -462,7 +433,7 @@ def handle_tasks():
         'dependent_tasks': [dep.id for dep in task.dependent_tasks]
     } for task in tasks])
 
-@app.route('/api/tasks/<int:task_id>', methods=['PUT', 'DELETE'])
+@app.route('/api/tasks/<int:task_id>', methods=['PUT', 'DELETE', 'PATCH'])
 def handle_task(task_id):
     task = Task.query.get_or_404(task_id)
     
@@ -470,6 +441,9 @@ def handle_task(task_id):
         db.session.delete(task)
         db.session.commit()
         return '', 204
+    
+    if request.method == 'PATCH':
+        return update_task(task_id)
     
     data = request.json
     task.title = data.get('title', task.title)
@@ -554,6 +528,71 @@ def analyze_tasks():
     tasks = Task.query.all()
     analysis = analyze_task_dependencies(tasks)
     return jsonify({'analysis': analysis})
+
+def analyze_task_dependencies(tasks):
+    """Analyze tasks to suggest dependencies and optimal ordering"""
+    try:
+        # Format tasks for the prompt
+        tasks_text = "\n".join([
+            f"Task: {task.title}\nDescription: {task.description or 'No description'}\n"
+            f"Status: {task.status}\nPriority: {task.priority_label}\n"
+            f"Ticket: {task.ticket_number or 'No ticket'}\n"
+            f"Duration: {task.estimated_duration or 'Not specified'} minutes\n"
+            for task in tasks if task.status != 'Completed'
+        ])
+        
+        if not tasks_text:
+            return "No active tasks to analyze."
+        
+        system_prompt = """You are an AI project management assistant that specializes in analyzing task dependencies and suggesting optimal task ordering.
+Your goal is to identify logical dependencies between tasks and suggest the most efficient way to complete them.
+Consider:
+1. Task descriptions and titles for semantic relationships
+2. Priority levels
+3. Estimated durations
+4. Current status
+5. Ticket numbers (tasks with similar ticket numbers might be related)"""
+
+        user_prompt = f"""Analyze these tasks and suggest:
+1. Potential dependencies between tasks (which tasks should be completed before others)
+2. Optimal ordering for task completion
+3. Tasks that could be grouped or done in parallel
+4. Any potential blockers or risks
+
+Tasks to analyze:
+{tasks_text}
+
+Format your response in markdown with these sections:
+## Dependencies
+- List task dependencies and explain why they are related
+
+## Optimal Order
+1. First task to complete
+2. Second task
+3. etc.
+
+## Parallel Work
+- Groups of tasks that can be done simultaneously
+
+## Risks & Recommendations
+- Potential blockers
+- Suggestions for efficiency
+- Any concerns about the current task organization"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        app.logger.error(f"Error analyzing task dependencies: {str(e)}")
+        return "Error analyzing task dependencies. Please try again later."
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
@@ -679,6 +718,204 @@ def restore_backup_endpoint(filename):
             return jsonify({'error': 'Failed to restore database'}), 500
     except Exception as e:
         app.logger.error(f"Error restoring backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/tasks/<int:task_id>/status', methods=['POST'])
+def update_task_status(task_id):
+    """Update task status and add a status update entry"""
+    try:
+        task = Task.query.get_or_404(task_id)
+        data = request.json
+        
+        if not data.get('status'):
+            return jsonify({'error': 'Status is required'}), 400
+            
+        # Create new status update
+        status_update = StatusUpdate(
+            task_id=task.id,
+            status=data['status'],
+            notes=data.get('notes')
+        )
+        
+        # Update task status
+        task.status = data['status']
+        
+        # Update completion timestamp if needed
+        if data['status'] == 'Completed' and not task.completed_at:
+            task.completed_at = datetime.now()
+        elif data['status'] != 'Completed':
+            task.completed_at = None
+            
+        db.session.add(status_update)
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Status updated successfully',
+            'task': task.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error updating task status: {str(e)}")
+        return jsonify({'error': 'Failed to update status'}), 500
+
+@app.route('/api/tasks/<int:task_id>/status-history', methods=['GET'])
+def get_task_status_history(task_id):
+    """Get the status update history for a task"""
+    try:
+        task = Task.query.get_or_404(task_id)
+        return jsonify({
+            'task_id': task.id,
+            'task_title': task.title,
+            'status_updates': [update.to_dict() for update in task.status_updates]
+        })
+    except Exception as e:
+        app.logger.error(f"Error getting task status history: {str(e)}")
+        return jsonify({'error': 'Failed to get status history'}), 500
+
+def update_task(task_id):
+    """Update an existing task"""
+    try:
+        task = Task.query.get_or_404(task_id)
+        data = request.json
+        
+        # Update basic fields
+        if 'title' in data:
+            task.title = data['title']
+        if 'description' in data:
+            task.description = data['description']
+        if 'ticket_number' in data:
+            task.ticket_number = data['ticket_number']
+        if 'priority' in data:
+            task.priority = data['priority']
+        if 'estimated_duration' in data:
+            task.estimated_duration = data['estimated_duration']
+            
+        # Handle status change
+        if 'status' in data and data['status'] != task.status:
+            old_status = task.status
+            task.status = data['status']
+            
+            # Create status update
+            status_update = StatusUpdate(
+                task_id=task.id,
+                status=data['status'],
+                notes=f"Status changed from {old_status} to {data['status']}"
+            )
+            db.session.add(status_update)
+            
+            # Update completion timestamp
+            if data['status'] == 'Completed' and not task.completed_at:
+                task.completed_at = datetime.utcnow()
+            elif data['status'] != 'Completed':
+                task.completed_at = None
+        
+        db.session.commit()
+        
+        return jsonify({
+            'message': 'Task updated successfully',
+            'task': task.to_dict()
+        })
+        
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error updating task: {str(e)}")
+        return jsonify({'error': 'Failed to update task'}), 500
+
+@app.route('/api/status-report', methods=['GET'])
+def generate_status_report():
+    """Generate an AI-powered status report for all projects and tasks"""
+    try:
+        # Get all projects with their tasks
+        projects = Project.query.all()
+        project_data = []
+        
+        for project in projects:
+            tasks = Task.query.filter_by(project_id=project.id).all()
+            
+            # Calculate project metrics
+            total_tasks = len(tasks)
+            completed_tasks = len([t for t in tasks if t.status == 'Completed'])
+            in_progress_tasks = len([t for t in tasks if t.status == 'In Progress'])
+            not_started_tasks = len([t for t in tasks if t.status == 'Not Started'])
+            on_hold_tasks = len([t for t in tasks if t.status == 'On Hold'])
+            
+            # Get task details including latest status updates
+            task_details = []
+            for task in tasks:
+                latest_update = StatusUpdate.query.filter_by(task_id=task.id).order_by(StatusUpdate.created_at.desc()).first()
+                task_details.append({
+                    'title': task.title,
+                    'ticket_number': task.ticket_number,
+                    'status': task.status,
+                    'priority': task.priority_label,
+                    'latest_update': latest_update.notes if latest_update else None,
+                    'latest_update_time': latest_update.created_at.isoformat() if latest_update else None
+                })
+            
+            project_data.append({
+                'name': project.name,
+                'metrics': {
+                    'total_tasks': total_tasks,
+                    'completed_tasks': completed_tasks,
+                    'in_progress_tasks': in_progress_tasks,
+                    'not_started_tasks': not_started_tasks,
+                    'on_hold_tasks': on_hold_tasks,
+                    'completion_rate': round((completed_tasks / total_tasks * 100) if total_tasks > 0 else 0, 2)
+                },
+                'tasks': task_details
+            })
+        
+        app.logger.info(f"Collected data for {len(project_data)} projects")
+        
+        if not project_data:
+            return jsonify({
+                'report': "No projects or tasks found to generate a report.",
+                'raw_data': []
+            })
+        
+        # Generate AI summary using project data
+        system_prompt = """You are an AI project management assistant that creates clear and concise status reports.
+Your goal is to analyze project data and create a well-structured status report that highlights:
+1. Overall project health and progress
+2. Key metrics and completion rates
+3. Important status updates and potential blockers
+4. Recommendations for next steps"""
+
+        user_prompt = f"""Create a detailed status report based on the following project data:
+
+{json.dumps(project_data, indent=2)}
+
+Format the report with these sections:
+1. Executive Summary
+2. Project-by-Project Breakdown
+3. Key Metrics & Progress
+4. Recent Updates & Status Changes
+5. Recommendations
+
+Use markdown formatting for better readability."""
+
+        app.logger.info("Generating AI report...")
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
+            temperature=0.7,
+            max_tokens=2000
+        )
+        
+        report_content = response.choices[0].message.content.strip()
+        app.logger.info("AI report generated successfully")
+        
+        return jsonify({
+            'report': report_content,
+            'raw_data': project_data
+        })
+        
+    except Exception as e:
+        app.logger.error(f"Error generating status report: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
 if __name__ == '__main__':
