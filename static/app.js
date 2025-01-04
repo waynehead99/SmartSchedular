@@ -133,14 +133,11 @@ async function showAddTaskModal() {
     document.getElementById('taskDuration').value = '';
     document.getElementById('taskPriority').value = '3';
     
-    // Get projects for dropdown
-    const response = await fetch('/api/projects');
-    const projects = await response.json();
+    // Load available projects for selection
+    loadProjectsForTaskModal();
     
-    const projectSelect = document.getElementById('taskProject');
-    projectSelect.innerHTML = projects.map(project => 
-        `<option value="${project.id}">${project.name}</option>`
-    ).join('');
+    // Load available tasks for dependencies
+    loadTasksForDependencies();
     
     modal.show();
 }
@@ -155,11 +152,376 @@ function showEditTaskModal(task) {
     document.getElementById('taskStatus').value = task.status;
     document.getElementById('deleteTaskBtn').style.display = 'block';
     
+    // Load and set project
     loadProjectsForTaskModal().then(() => {
         document.getElementById('taskProject').value = task.project_id;
     });
     
+    // Load and set dependencies
+    loadTasksForDependencies(task.id).then(() => {
+        const dependencySelect = document.getElementById('taskDependencies');
+        task.dependencies.forEach(depId => {
+            const option = dependencySelect.querySelector(`option[value="${depId}"]`);
+            if (option) option.selected = true;
+        });
+    });
+    
+    // Show time tracking info if available
+    const timeTracking = document.getElementById('taskTimeTracking');
+    if (task.started_at || task.completed_at || task.actual_duration) {
+        timeTracking.style.display = 'block';
+        document.getElementById('taskStartedAt').textContent = task.started_at ? new Date(task.started_at).toLocaleString() : '-';
+        document.getElementById('taskCompletedAt').textContent = task.completed_at ? new Date(task.completed_at).toLocaleString() : '-';
+        document.getElementById('taskActualDuration').textContent = task.actual_duration ? `${task.actual_duration} minutes` : '-';
+        document.getElementById('taskProgressBar').style.width = `${task.progress}%`;
+    } else {
+        timeTracking.style.display = 'none';
+    }
+    
     new bootstrap.Modal(document.getElementById('addTaskModal')).show();
+}
+
+async function loadTasksForDependencies(excludeTaskId = null) {
+    try {
+        const response = await fetch('/api/tasks');
+        const tasks = await response.json();
+        const select = document.getElementById('taskDependencies');
+        select.innerHTML = '';
+        
+        tasks.forEach(task => {
+            if (task.id !== excludeTaskId) {  // Don't show current task as dependency option
+                const option = document.createElement('option');
+                option.value = task.id;
+                option.textContent = `${task.title} (${task.status})`;
+                select.appendChild(option);
+            }
+        });
+    } catch (error) {
+        console.error('Error loading tasks for dependencies:', error);
+        showToast('Error', 'Failed to load tasks for dependencies', 'error');
+    }
+}
+
+async function loadProjectsForTaskModal() {
+    try {
+        const response = await fetch('/api/projects');
+        const projects = await response.json();
+        const select = document.getElementById('taskProject');
+        select.innerHTML = `
+            <option value="" disabled selected>Select a project</option>
+            ${projects.map(project => 
+                `<option value="${project.id}">${project.name}</option>`
+            ).join('')}
+        `;
+    } catch (error) {
+        console.error('Error loading projects for task modal:', error);
+        showToast('Error', 'Failed to load projects', 'error');
+    }
+}
+
+async function saveTask() {
+    const taskId = document.getElementById('taskId').value;
+    const method = taskId ? 'PUT' : 'POST';
+    const url = taskId ? `/api/tasks/${taskId}` : '/api/tasks';
+    
+    const projectId = document.getElementById('taskProject').value;
+    if (!projectId) {
+        showToast('Error', 'Please select a project', 'error');
+        return;
+    }
+    
+    const taskData = {
+        title: document.getElementById('taskTitle').value,
+        description: document.getElementById('taskDescription').value,
+        project_id: parseInt(projectId),
+        estimated_duration: parseInt(document.getElementById('taskDuration').value),
+        status: document.getElementById('taskStatus').value,
+        priority: parseInt(document.getElementById('taskPriority').value),
+        dependencies: Array.from(document.getElementById('taskDependencies').selectedOptions).map(opt => parseInt(opt.value))
+    };
+    
+    try {
+        const response = await fetch(url, {
+            method: method,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(taskData)
+        });
+        
+        if (response.ok) {
+            const result = await response.json();
+            showToast('Success', `Task ${taskId ? 'updated' : 'created'} successfully`, 'success');
+            bootstrap.Modal.getInstance(document.getElementById('addTaskModal')).hide();
+            loadTasks();
+            calendar.refetchEvents();
+        } else {
+            const error = await response.json();
+            showToast('Error', error.message || 'Failed to save task', 'error');
+        }
+    } catch (error) {
+        console.error('Error saving task:', error);
+        showToast('Error', 'Failed to save task', 'error');
+    }
+}
+
+async function deleteTask() {
+    const taskId = document.getElementById('taskId').value;
+    if (!taskId) return;
+
+    if (confirm('Are you sure you want to delete this task?')) {
+        try {
+            const response = await fetch(`/api/tasks/${taskId}`, {
+                method: 'DELETE'
+            });
+
+            if (response.ok) {
+                loadTasks();
+                bootstrap.Modal.getInstance(document.getElementById('addTaskModal')).hide();
+            }
+        } catch (error) {
+            console.error('Error deleting task:', error);
+            showToast('Error', 'Failed to delete task', 'error');
+        }
+    }
+}
+
+async function loadProjects() {
+    try {
+        const response = await fetch('/api/projects');
+        const projects = await response.json();
+        displayProjects(projects);
+    } catch (error) {
+        console.error('Error loading projects:', error);
+    }
+}
+
+async function loadTasks() {
+    try {
+        const response = await fetch('/api/tasks');
+        const tasks = await response.json();
+        displayTasks(tasks);
+    } catch (error) {
+        console.error('Error loading tasks:', error);
+    }
+}
+
+function displayTasks(tasks) {
+    const tasksList = document.getElementById('tasks-list');
+    tasksList.innerHTML = '';
+    
+    tasks.forEach(task => {
+        const taskItem = document.createElement('div');
+        taskItem.className = 'list-group-item task-item';
+        
+        // Add background color based on status
+        taskItem.style.backgroundColor = getStatusBackground(task.status);
+        
+        // Add left border color based on project color
+        if (task.project_id) {
+            const projectColor = getProjectColor(task.project_id);
+            taskItem.style.borderLeft = `4px solid ${projectColor}`;
+        }
+        
+        const taskHeader = document.createElement('div');
+        taskHeader.className = 'd-flex justify-content-between align-items-start';
+        
+        const taskContent = document.createElement('div');
+        taskContent.className = 'ms-2 me-auto';
+        
+        const titleRow = document.createElement('div');
+        titleRow.className = 'd-flex align-items-center gap-2';
+        
+        const title = document.createElement('div');
+        title.className = 'fw-bold';
+        title.textContent = task.title;
+        
+        const statusBadge = document.createElement('span');
+        statusBadge.className = `badge ${getStatusColor(task.status)} badge-sm`;
+        statusBadge.textContent = task.status;
+        
+        titleRow.appendChild(title);
+        titleRow.appendChild(statusBadge);
+        
+        const projectName = document.createElement('small');
+        projectName.className = 'text-muted d-block mt-1';
+        projectName.textContent = task.project_name;
+        if (task.project_id) {
+            const projectColor = getProjectColor(task.project_id);
+            projectName.style.color = projectColor;
+        }
+        
+        const priorityBadge = document.createElement('span');
+        priorityBadge.className = `badge ${getPriorityClass(task.priority)} ms-2`;
+        priorityBadge.textContent = task.priority_label;
+        
+        // Add progress bar if task is in progress
+        if (task.status === 'In Progress') {
+            const progressBar = document.createElement('div');
+            progressBar.className = 'progress mt-2';
+            progressBar.style.height = '5px';
+            
+            const progressBarInner = document.createElement('div');
+            progressBarInner.className = 'progress-bar';
+            progressBarInner.style.width = `${task.progress}%`;
+            if (task.project_id) {
+                progressBarInner.style.backgroundColor = getProjectColor(task.project_id);
+            }
+            
+            progressBar.appendChild(progressBarInner);
+            taskContent.appendChild(progressBar);
+        }
+        
+        // Create task actions container
+        const taskActions = document.createElement('div');
+        taskActions.className = 'task-actions d-flex align-items-center';
+        
+        // Build the task item structure
+        taskContent.appendChild(titleRow);
+        taskContent.appendChild(projectName);
+        
+        taskHeader.appendChild(taskContent);
+        taskHeader.appendChild(taskActions);
+        taskHeader.appendChild(priorityBadge);
+        
+        taskItem.appendChild(taskHeader);
+        
+        // Add click handler to task content area only
+        taskContent.addEventListener('click', (e) => {
+            e.stopPropagation();
+            showEditTaskModal(task);
+        });
+        
+        // Add schedule button
+        addScheduleButton(taskItem, task);
+        
+        tasksList.appendChild(taskItem);
+    });
+}
+
+// Add schedule button to task items
+function addScheduleButton(taskItem, task) {
+    const scheduleButton = document.createElement('button');
+    scheduleButton.className = 'btn btn-sm btn-outline-primary ms-2';
+    scheduleButton.innerHTML = '<i class="fas fa-calendar-alt"></i>';
+    scheduleButton.title = 'Get AI scheduling suggestions';
+    
+    scheduleButton.addEventListener('click', async (e) => {
+        e.stopPropagation(); // Stop event from bubbling up
+        try {
+            const response = await fetch('/api/schedule/suggest', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                },
+                body: JSON.stringify({
+                    task_id: task.id
+                })
+            });
+            
+            if (!response.ok) {
+                throw new Error('Failed to get scheduling suggestions');
+            }
+            
+            const data = await response.json();
+            if (data.suggestions && data.suggestions.length > 0) {
+                showSchedulingSuggestions(data.suggestions, task);
+            } else {
+                showToast('Info', 'No scheduling suggestions available at this time.', 'info');
+            }
+        } catch (error) {
+            console.error('Error getting scheduling suggestions:', error);
+            showToast('Error', 'Error getting scheduling suggestions. Please try again.', 'error');
+        }
+    });
+    
+    taskItem.querySelector('.task-actions').appendChild(scheduleButton);
+}
+
+function showSchedulingSuggestions(suggestions, task) {
+    // Create modal content
+    const modalContent = document.createElement('div');
+    modalContent.innerHTML = `
+        <div class="modal fade" id="schedulingModal" tabindex="-1">
+            <div class="modal-dialog">
+                <div class="modal-content">
+                    <div class="modal-header">
+                        <h5 class="modal-title">Scheduling Suggestions for "${task.title}"</h5>
+                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                    </div>
+                    <div class="modal-body">
+                        <div class="list-group">
+                            ${suggestions.map(suggestion => `
+                                <div class="list-group-item">
+                                    <div class="d-flex justify-content-between align-items-center">
+                                        <div>
+                                            <h6 class="mb-1">Suggested Time: ${suggestion.suggested_time}</h6>
+                                            <p class="mb-1 text-muted">Duration: ${suggestion.duration} minutes</p>
+                                            <p class="mb-1 small text-muted">${suggestion.reason}</p>
+                                        </div>
+                                        <button class="btn btn-sm btn-success schedule-time-btn" 
+                                                data-time="${suggestion.suggested_time}"
+                                                data-duration="${suggestion.duration}">
+                                            Schedule
+                                        </button>
+                                    </div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                    <div class="modal-footer">
+                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    `;
+    
+    // Remove any existing modal
+    const existingModal = document.getElementById('schedulingModal');
+    if (existingModal) {
+        existingModal.remove();
+    }
+    
+    // Add modal to document
+    document.body.appendChild(modalContent.firstElementChild);
+    
+    // Initialize modal
+    const modal = new bootstrap.Modal(document.getElementById('schedulingModal'));
+    modal.show();
+    
+    // Add event listeners to schedule buttons
+    document.querySelectorAll('.schedule-time-btn').forEach(button => {
+        button.addEventListener('click', async () => {
+            const scheduledTime = button.dataset.time;
+            const duration = parseInt(button.dataset.duration, 10);
+            
+            try {
+                const response = await fetch('/api/schedule/approve', {
+                    method: 'POST',
+                    headers: {
+                        'Content-Type': 'application/json'
+                    },
+                    body: JSON.stringify({
+                        task_id: task.id,
+                        suggested_time: scheduledTime,
+                        duration: duration
+                    })
+                });
+                
+                if (!response.ok) {
+                    throw new Error('Failed to schedule task');
+                }
+                
+                const data = await response.json();
+                showToast('Success', `Task scheduled for ${scheduledTime}`, 'success');
+                modal.hide();
+                loadTasks(); // Refresh task list
+                if (calendar) calendar.refetchEvents(); // Refresh calendar if it exists
+            } catch (error) {
+                console.error('Error scheduling task:', error);
+                showToast('Error', 'Error scheduling task. Please try again.', 'error');
+            }
+        });
+    });
 }
 
 // Helper function to format datetime-local input
@@ -185,9 +547,7 @@ async function saveEvent() {
         
         const response = await fetch(url, {
             method: method,
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(event)
         });
 
@@ -233,9 +593,7 @@ async function saveProject() {
         
         const response = await fetch(url, {
             method: method,
-            headers: {
-                'Content-Type': 'application/json'
-            },
+            headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(project)
         });
 
@@ -266,91 +624,6 @@ async function deleteProject() {
         } catch (error) {
             console.error('Error deleting project:', error);
         }
-    }
-}
-
-async function saveTask() {
-    const taskId = document.getElementById('taskId').value;
-    const task = {
-        project_id: document.getElementById('taskProject').value,
-        title: document.getElementById('taskTitle').value,
-        description: document.getElementById('taskDescription').value,
-        estimated_duration: parseInt(document.getElementById('taskDuration').value),
-        priority: parseInt(document.getElementById('taskPriority').value),
-        status: document.getElementById('taskStatus').value
-    };
-
-    try {
-        const url = taskId ? `/api/tasks/${taskId}` : '/api/tasks';
-        const method = taskId ? 'PUT' : 'POST';
-        
-        const response = await fetch(url, {
-            method: method,
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify(task)
-        });
-
-        if (response.ok) {
-            loadTasks();
-            bootstrap.Modal.getInstance(document.getElementById('addTaskModal')).hide();
-        }
-    } catch (error) {
-        console.error('Error saving task:', error);
-    }
-}
-
-async function deleteTask() {
-    const taskId = document.getElementById('taskId').value;
-    if (!taskId) return;
-
-    if (confirm('Are you sure you want to delete this task?')) {
-        try {
-            const response = await fetch(`/api/tasks/${taskId}`, {
-                method: 'DELETE'
-            });
-
-            if (response.ok) {
-                loadTasks();
-                bootstrap.Modal.getInstance(document.getElementById('addTaskModal')).hide();
-            }
-        } catch (error) {
-            console.error('Error deleting task:', error);
-        }
-    }
-}
-
-async function loadProjects() {
-    try {
-        const response = await fetch('/api/projects');
-        const projects = await response.json();
-        displayProjects(projects);
-    } catch (error) {
-        console.error('Error loading projects:', error);
-    }
-}
-
-async function loadTasks() {
-    try {
-        const response = await fetch('/api/tasks');
-        const tasks = await response.json();
-        displayTasks(tasks);
-    } catch (error) {
-        console.error('Error loading tasks:', error);
-    }
-}
-
-async function loadProjectsForTaskModal() {
-    try {
-        const response = await fetch('/api/projects');
-        const projects = await response.json();
-        const select = document.getElementById('taskProject');
-        select.innerHTML = projects.map(project => 
-            `<option value="${project.id}">${project.name}</option>`
-        ).join('');
-    } catch (error) {
-        console.error('Error loading projects for task modal:', error);
     }
 }
 
@@ -474,7 +747,7 @@ function displayProjects(projects) {
             <div class="project-item" onclick="showEditProjectModal(${JSON.stringify(project).replace(/"/g, '&quot;')})" 
                  style="border-left: 4px solid ${projectColor}">
                 <div class="d-flex justify-content-between align-items-center">
-                    <div class="d-flex align-items-center">
+                    <div>
                         <h5 class="mb-0">${project.name}</h5>
                         <span class="badge bg-${getStatusColor(project.status)} ms-2">${project.status}</span>
                         <span class="badge ${getPriorityClass(project.priority)} ms-2">${project.priority_label}</span>
@@ -499,35 +772,6 @@ function displayProjects(projects) {
     }).join('');
 }
 
-function displayTasks(tasks) {
-    const tasksList = document.getElementById('tasks-list');
-    tasksList.innerHTML = tasks.map(task => {
-        const projectColor = getProjectColor(task.project_id);
-        const isExpanded = expandedTasks.has(task.id);
-        return `
-            <div class="task-item" onclick="showEditTaskModal(${JSON.stringify(task).replace(/"/g, '&quot;')})"
-                 style="border-left: 4px solid ${projectColor}">
-                <div class="d-flex justify-content-between align-items-center">
-                    <div class="d-flex align-items-center flex-grow-1">
-                        <h6 class="mb-0 me-2">${task.title}</h6>
-                        <span class="badge" style="background-color: ${projectColor}">${task.project_name}</span>
-                        <span class="badge bg-${getStatusColor(task.status)} ms-2">${task.status}</span>
-                        <span class="badge ${getPriorityClass(task.priority)} ms-2">${task.priority_label}</span>
-                    </div>
-                    <button class="btn btn-link btn-sm p-0 text-dark ms-2" 
-                            onclick="toggleTaskDetails(${task.id}, event)">
-                        <i class="fas fa-chevron-${isExpanded ? 'up' : 'down'}"></i>
-                    </button>
-                </div>
-                <div class="task-details ${isExpanded ? 'show' : ''}" style="display: ${isExpanded ? 'block' : 'none'}">
-                    <p class="mt-2 mb-2">${task.description || 'No description'}</p>
-                    <small class="text-muted">Duration: ${task.estimated_duration} minutes</small>
-                </div>
-            </div>
-        `;
-    }).join('');
-}
-
 function getStatusColor(status) {
     switch (status.toLowerCase()) {
         case 'completed':
@@ -538,6 +782,19 @@ function getStatusColor(status) {
             return 'warning';
         default:
             return 'secondary';
+    }
+}
+
+function getStatusBackground(status) {
+    switch (status) {
+        case 'Not Started':
+            return '#f8f9fa';  // Light gray
+        case 'In Progress':
+            return '#e8f4ff';  // Light blue
+        case 'Completed':
+            return '#e8f8e8';  // Light green
+        default:
+            return '#ffffff';  // White
     }
 }
 
@@ -650,114 +907,32 @@ async function getAIAnalysis() {
         aiSuggestions.style.display = 'block';
         aiContent.innerHTML = '<div class="text-center"><div class="spinner-border text-primary" role="status"></div><div class="mt-2">Analyzing tasks and generating suggestions...</div></div>';
 
-        // First get schedule suggestions
-        const scheduleResponse = await fetch('/api/schedule/suggest');
-        const scheduleData = await scheduleResponse.json();
-        
-        // Then get task dependencies analysis
+        // Get task dependencies analysis
         const analysisResponse = await fetch('/api/tasks/analyze');
         const analysisData = await analysisResponse.json();
         
         // Display the suggestions
         aiContent.innerHTML = `
-            <div class="mb-4">
-                <h6 class="mb-3">📅 Scheduling Suggestions</h6>
-                <div class="list-group">
-                    ${scheduleData.suggestions.map((suggestion, index) => `
-                        <div class="list-group-item">
-                            <div class="d-flex justify-content-between align-items-start">
-                                <div>
-                                    <h6 class="mb-1">${suggestion.task}</h6>
-                                    <p class="mb-1 text-muted small">
-                                        <i class="fas fa-clock"></i> ${formatDateTime(suggestion.suggested_time)}
-                                    </p>
-                                    <p class="mb-1 small">
-                                        <i class="fas fa-info-circle"></i> ${suggestion.reason}
-                                    </p>
-                                </div>
-                                <button class="btn btn-outline-success btn-sm" 
-                                        onclick="handleSuggestionApproval(${index})">
-                                    <i class="fas fa-check"></i> Schedule
-                                </button>
-                            </div>
-                        </div>
-                    `).join('')}
-                </div>
-            </div>
             <div>
-                <h6 class="mb-3">🔄 Task Dependencies</h6>
+                <h6 class="mb-3">🔄 Task Dependencies Analysis</h6>
                 <pre class="border rounded p-3 bg-light" style="font-size: 0.8rem; white-space: pre-wrap;">${analysisData.analysis}</pre>
             </div>
+            <div class="mt-4">
+                <p class="text-muted">
+                    <i class="fas fa-info-circle"></i> 
+                    Click the calendar icon on any task to get AI scheduling suggestions for that specific task.
+                </p>
+            </div>
         `;
-
-        // Store suggestions in a global variable for reference
-        window.currentSuggestions = scheduleData.suggestions;
     } catch (error) {
         console.error('Error getting AI analysis:', error);
-        alert('Error getting AI suggestions. Please try again.');
+        aiContent.innerHTML = `
+            <div class="alert alert-danger">
+                <i class="fas fa-exclamation-circle"></i> 
+                Error analyzing tasks. Please try again.
+            </div>
+        `;
     }
-}
-
-async function handleSuggestionApproval(index) {
-    const suggestion = window.currentSuggestions[index];
-    if (!suggestion) {
-        console.error('Suggestion not found');
-        return;
-    }
-
-    const button = event.target.closest('button');
-    if (button.disabled) return;
-
-    try {
-        button.disabled = true;
-        button.innerHTML = '<i class="fas fa-spinner fa-spin"></i> Scheduling...';
-
-        const response = await fetch('/api/schedule/approve', {
-            method: 'POST',
-            headers: {
-                'Content-Type': 'application/json'
-            },
-            body: JSON.stringify({
-                task: suggestion.task,
-                suggested_time: suggestion.suggested_time,
-                duration: 60
-            })
-        });
-        
-        const data = await response.json();
-        
-        if (response.ok) {
-            // Refresh the calendar events
-            calendar.refetchEvents();
-            
-            // Update button state
-            button.innerHTML = '<i class="fas fa-check"></i> Scheduled';
-            button.classList.remove('btn-outline-success');
-            button.classList.add('btn-success');
-            
-            // Show success message
-            showToast('Success', 'Task has been scheduled!', 'success');
-        } else {
-            throw new Error(data.error || 'Failed to approve suggestion');
-        }
-    } catch (error) {
-        console.error('Error approving suggestion:', error);
-        button.disabled = false;
-        button.innerHTML = '<i class="fas fa-check"></i> Schedule';
-        showToast('Error', 'Failed to schedule task. Please try again.', 'error');
-    }
-}
-
-function formatDateTime(dateTimeStr) {
-    const date = new Date(dateTimeStr);
-    return date.toLocaleString('en-US', {
-        weekday: 'short',
-        month: 'short',
-        day: 'numeric',
-        hour: 'numeric',
-        minute: '2-digit',
-        hour12: true
-    });
 }
 
 function showToast(title, message, type = 'info') {

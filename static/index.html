@@ -174,10 +174,6 @@
                 <div class="modal-body">
                     <input type="hidden" id="taskId">
                     <div class="mb-3">
-                        <label for="taskProject" class="form-label">Project</label>
-                        <select class="form-control" id="taskProject" required></select>
-                    </div>
-                    <div class="mb-3">
                         <label for="taskTitle" class="form-label">Title</label>
                         <input type="text" class="form-control" id="taskTitle" required>
                     </div>
@@ -186,24 +182,58 @@
                         <textarea class="form-control" id="taskDescription" rows="3"></textarea>
                     </div>
                     <div class="mb-3">
+                        <label for="taskProject" class="form-label">Project</label>
+                        <select class="form-select" id="taskProject" required>
+                            <!-- Projects will be loaded dynamically -->
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="taskPriority" class="form-label">Priority</label>
+                        <select class="form-select" id="taskPriority">
+                            <option value="1">High</option>
+                            <option value="2" selected>Medium</option>
+                            <option value="3">Low</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
                         <label for="taskDuration" class="form-label">Estimated Duration (minutes)</label>
-                        <input type="number" class="form-control" id="taskDuration" value="60" min="1">
+                        <input type="number" class="form-control" id="taskDuration" min="1" value="60">
                     </div>
                     <div class="mb-3">
                         <label for="taskStatus" class="form-label">Status</label>
-                        <select class="form-control" id="taskStatus">
-                            <option value="Pending">Pending</option>
+                        <select class="form-select" id="taskStatus">
+                            <option value="Not Started" selected>Not Started</option>
                             <option value="In Progress">In Progress</option>
                             <option value="Completed">Completed</option>
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label for="taskPriority" class="form-label">Priority</label>
-                        <select class="form-control" id="taskPriority">
-                            <option value="1">High</option>
-                            <option value="2" selected>Medium</option>
-                            <option value="3">Low</option>
+                        <label for="taskDependencies" class="form-label">Dependencies</label>
+                        <select class="form-select" id="taskDependencies" multiple>
+                            <!-- Tasks will be loaded dynamically -->
                         </select>
+                        <small class="form-text text-muted">Select tasks that must be completed before this one</small>
+                    </div>
+                    <div id="taskTimeTracking" class="mb-3" style="display: none;">
+                        <h6>Time Tracking</h6>
+                        <div class="row">
+                            <div class="col">
+                                <small>Started: <span id="taskStartedAt">-</span></small>
+                            </div>
+                            <div class="col">
+                                <small>Completed: <span id="taskCompletedAt">-</span></small>
+                            </div>
+                        </div>
+                        <div class="row mt-2">
+                            <div class="col">
+                                <small>Actual Duration: <span id="taskActualDuration">-</span></small>
+                            </div>
+                            <div class="col">
+                                <div class="progress">
+                                    <div id="taskProgressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 </div>
                 <div class="modal-footer">

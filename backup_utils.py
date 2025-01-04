@@ -54,7 +54,7 @@ def create_backup():
             # Backup tasks
             tasks = db.session.query(Task).all()
             for task in tasks:
-                backup_data['tasks'].append({
+                task_data = {
                     'id': task.id,
                     'project_id': task.project_id,
                     'title': task.title,
@@ -63,9 +63,12 @@ def create_backup():
                     'status': task.status,
                     'priority': task.priority,
                     'created_at': task.created_at.isoformat() if task.created_at else None,
-                    'scheduled_start': task.scheduled_start.isoformat() if task.scheduled_start else None,
-                    'scheduled_end': task.scheduled_end.isoformat() if task.scheduled_end else None
-                })
+                    'started_at': task.started_at.isoformat() if task.started_at else None,
+                    'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+                    'actual_duration': task.actual_duration,
+                    'dependencies': [dep.id for dep in task.dependencies]
+                }
+                backup_data['tasks'].append(task_data)
 
             # Backup calendar events
             calendar_events = db.session.query(Calendar).all()
@@ -140,10 +143,11 @@ def restore_backup(backup_filename):
             )
             if task_data['created_at']:
                 task.created_at = datetime.fromisoformat(task_data['created_at'])
-            if task_data['scheduled_start']:
-                task.scheduled_start = datetime.fromisoformat(task_data['scheduled_start'])
-            if task_data['scheduled_end']:
-                task.scheduled_end = datetime.fromisoformat(task_data['scheduled_end'])
+            if task_data['started_at']:
+                task.started_at = datetime.fromisoformat(task_data['started_at'])
+            if task_data['completed_at']:
+                task.completed_at = datetime.fromisoformat(task_data['completed_at'])
+            task.actual_duration = task_data['actual_duration']
             db.session.add(task)
 
         # Restore calendar events

@@ -73,6 +73,11 @@ body {
     font-weight: 500;
 }
 
+.badge-sm {
+    font-size: 0.75em;
+    padding: 0.25em 0.5em;
+}
+
 .task-item .badge {
     margin-right: 0;
 }
@@ -85,6 +90,39 @@ body {
 .task-details small {
     display: block;
     color: #6c757d;
+}
+
+.task-item {
+    padding: 1rem;
+    margin-bottom: 0.5rem;
+    border-radius: 0.25rem;
+    border-left-width: 4px !important;
+    transition: all 0.2s ease-in-out;
+}
+
+.task-item:hover {
+    background-color: rgba(0, 0, 0, 0.02);
+}
+
+.task-actions {
+    margin-left: auto;
+    margin-right: 1rem;
+    display: flex;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.task-actions button {
+    padding: 0.25rem 0.5rem;
+    font-size: 0.875rem;
+}
+
+.task-actions button i {
+    margin-right: 0;
+}
+
+.gap-2 {
+    gap: 0.5rem !important;
 }
 
 /* Backup Management Styles */

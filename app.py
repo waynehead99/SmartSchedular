@@ -20,15 +20,16 @@ Environment Variables Required:
 """
 
 import os
-from datetime import datetime, timedelta
 import json
+from datetime import datetime, timedelta
 from flask import Flask, request, jsonify, send_from_directory
+from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
-from flask_cors import CORS
-from dotenv import load_dotenv
-import openai
 from models import db, Project, Task, Calendar
+import openai
 from backup_utils import create_backup, restore_backup, list_backups
+from dotenv import load_dotenv
+import pytz
 
 # Load environment variables
 load_dotenv()
@@ -38,69 +39,172 @@ app = Flask(__name__, static_folder='static')
 CORS(app)
 
 # Configure database
-app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('SQLALCHEMY_DATABASE_URI', 'sqlite:///smart_scheduler.db')
+app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///smart_scheduler.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 
 # Initialize database
 db.init_app(app)
 
-# Initialize OpenAI
-openai.api_key = os.getenv('OPENAI_API_KEY')
+# Initialize OpenAI client
+client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+def is_working_hours(dt):
+    """Check if a datetime is within working hours (7 AM to 4 PM MST) on weekdays"""
+    # Convert to MST
+    mst_dt = dt.astimezone(pytz.timezone('America/Denver'))
+    # Check if it's a weekend
+    if mst_dt.weekday() >= 5:  # 5 is Saturday, 6 is Sunday
+        return False
+    # Check if it's between 7 AM and 4 PM MST
+    return 7 <= mst_dt.hour < 16
 
 def generate_schedule_suggestions(tasks, calendar_events):
     """Generate AI-powered schedule suggestions based on tasks and existing calendar"""
-    
-    # Format tasks and events for the AI
-    tasks_text = "\n".join([
-        f"Task: {task.title} (Duration: {task.estimated_duration}min, "
-        f"Project: {Project.query.get(task.project_id).name}, "
-        f"Status: {task.status})"
-        for task in tasks
-    ])
-    
-    events_text = "\n".join([
-        f"Event: {event.title} (Start: {event.start_time}, End: {event.end_time})"
-        for event in calendar_events
-    ])
-    
-    # Create AI prompt
-    prompt = f"""Given these tasks and calendar events, suggest an optimal schedule.
-For each suggestion, provide:
-1. Task name
-2. Suggested start time (in format YYYY-MM-DD HH:MM)
-3. Brief reasoning for the suggestion
+    try:
+        # Sort calendar events by start time
+        calendar_events = sorted(calendar_events, key=lambda x: x.start_time)
+        
+        # Find available time slots
+        available_slots = []
+        current_time = datetime.now(pytz.UTC)  # Make current time timezone-aware
+        
+        if calendar_events:
+            # Check for slot before first event
+            if current_time < calendar_events[0].start_time:
+                duration = int((calendar_events[0].start_time - current_time).total_seconds() / 60)
+                if duration >= 15 and not is_working_hours(current_time):  # Only include slots of 15 minutes or more
+                    available_slots.append({
+                        'start': current_time,
+                        'end': calendar_events[0].start_time,
+                        'duration': duration
+                    })
+            
+            # Check for slots between events
+            for i in range(len(calendar_events) - 1):
+                slot_start = calendar_events[i].end_time
+                slot_end = calendar_events[i + 1].start_time
+                if slot_start < slot_end and not is_working_hours(slot_start):
+                    duration = int((slot_end - slot_start).total_seconds() / 60)
+                    if duration >= 15:  # Only include slots of 15 minutes or more
+                        available_slots.append({
+                            'start': slot_start,
+                            'end': slot_end,
+                            'duration': duration
+                        })
+            
+            # Check for slot after last event
+            last_event = calendar_events[-1]
+            if last_event.end_time > current_time and not is_working_hours(last_event.end_time):
+                available_slots.append({
+                    'start': last_event.end_time,
+                    'end': last_event.end_time + timedelta(hours=8),  # Consider next 8 hours
+                    'duration': 480  # 8 hours in minutes
+                })
+        else:
+            # If no events, consider next 8 hours if not during working hours
+            if not is_working_hours(current_time):
+                available_slots.append({
+                    'start': current_time,
+                    'end': current_time + timedelta(hours=8),
+                    'duration': 480
+                })
 
-Format each suggestion exactly like this example:
-SUGGESTION
-Task: Complete project proposal
-Time: 2025-01-04 09:00
-Reason: Early morning is ideal for focused writing tasks, and this slot is free
-END
+        # Filter slots that are too short for the tasks
+        min_duration_needed = min(task.estimated_duration or 30 for task in tasks)  # Default to 30 minutes if not specified
+        available_slots = [slot for slot in available_slots if slot['duration'] >= min_duration_needed]
 
-Current tasks to schedule:
+        # Further filter slots to ensure they don't overlap with working hours
+        filtered_slots = []
+        for slot in available_slots:
+            start_time = slot['start']
+            end_time = slot['end']
+            current = start_time
+            
+            while current < end_time:
+                if not is_working_hours(current):
+                    # Find the next time that would be during working hours
+                    next_work_time = current + timedelta(hours=1)
+                    while next_work_time < end_time and not is_working_hours(next_work_time):
+                        next_work_time += timedelta(hours=1)
+                    
+                    duration = int((min(next_work_time, end_time) - current).total_seconds() / 60)
+                    if duration >= min_duration_needed:
+                        filtered_slots.append({
+                            'start': current,
+                            'end': min(next_work_time, end_time),
+                            'duration': duration
+                        })
+                
+                current += timedelta(hours=1)
+        
+        available_slots = filtered_slots
+
+        if not available_slots:
+            return []  # No suitable slots found
+
+        # Format tasks and slots for the prompt
+        tasks_text = "\n".join([
+            f"Task: {task.title} (Priority: {task.priority_label}, Duration: {task.estimated_duration or 30}min)"
+            for task in tasks if task.status != 'Completed'
+        ])
+        
+        slots_text = "\n".join([
+            f"Available Slot: {slot['start'].strftime('%Y-%m-%d %H:%M')} to {slot['end'].strftime('%Y-%m-%d %H:%M')} ({slot['duration']} minutes)"
+            for slot in available_slots
+        ])
+        
+        events_text = "\n".join([
+            f"Busy: {event.title} ({event.start_time.strftime('%Y-%m-%d %H:%M')} - {event.end_time.strftime('%Y-%m-%d %H:%M')})"
+            for event in calendar_events
+        ])
+        
+        system_prompt = """You are an AI scheduling assistant that helps optimize task scheduling around existing calendar events.
+Your goal is to create an efficient schedule by fitting tasks into available time slots while considering task priorities, durations, and dependencies.
+For each suggestion, you must specify an exact start time that falls within an available slot and ensure there is enough time for the task.
+IMPORTANT: Only suggest times outside of working hours (before 7 AM or after 4 PM MST) on weekdays, or any time on weekends."""
+
+        user_prompt = f"""Given these unfinished tasks and available time slots, suggest an optimal schedule that:
+1. Fits tasks into available time slots (never during busy periods)
+2. Ensures each slot has enough duration for the task
+3. Prioritizes high-priority tasks
+4. Groups related tasks in adjacent slots when possible
+5. Only schedules outside working hours (before 7 AM or after 4 PM MST) on weekdays, or any time on weekends
+
+Tasks to schedule:
 {tasks_text}
 
-Existing calendar events:
+Available time slots (already filtered for non-working hours):
+{slots_text}
+
+Busy periods:
 {events_text}
 
-Consider:
-1. Task durations and priorities
-2. Available time slots between events
-3. Project deadlines and dependencies
-4. Optimal time of day for different task types"""
+For each task, provide:
+1. Task name
+2. Exact start time (YYYY-MM-DD HH:MM format)
+3. Brief reason for the slot choice
 
-    try:
-        response = openai.Completion.create(
-            model="gpt-3.5-turbo-instruct",
-            prompt=prompt,
+Format each suggestion exactly like this:
+SUGGESTION
+Task: [Task Name]
+Time: [YYYY-MM-DD HH:MM]
+Reason: [Your reasoning]
+END"""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
             temperature=0.7,
             max_tokens=1000
         )
         
         # Parse the suggestions into a structured format
         suggestions = []
-        content = response.choices[0].text
+        content = response.choices[0].message.content
         suggestion_blocks = content.split('SUGGESTION\n')[1:]  # Skip the first empty split
         
         for block in suggestion_blocks:
@@ -113,48 +217,74 @@ Consider:
                 time_line = lines[1].replace('Time: ', '')
                 reason_line = lines[2].replace('Reason: ', '')
                 
-                suggestions.append({
-                    'task': task_line,
-                    'suggested_time': time_line,
-                    'reason': reason_line
-                })
+                # Validate the suggested time falls within an available slot
+                try:
+                    suggested_time = datetime.strptime(time_line, '%Y-%m-%d %H:%M')
+                    suggested_time = pytz.timezone('America/Denver').localize(suggested_time)
+                    
+                    # Double-check that the suggested time is outside working hours
+                    if not is_working_hours(suggested_time):
+                        task = next((t for t in tasks if t.title == task_line), None)
+                        if task:
+                            duration = task.estimated_duration or 30
+                            # Check if the suggestion fits in any available slot
+                            for slot in available_slots:
+                                if (slot['start'] <= suggested_time and 
+                                    suggested_time + timedelta(minutes=duration) <= slot['end']):
+                                    suggestions.append({
+                                        'task': task_line,
+                                        'suggested_time': time_line,
+                                        'reason': reason_line,
+                                        'duration': duration
+                                    })
+                                    break
+                except (ValueError, TypeError):
+                    continue  # Skip invalid time formats
         
         return suggestions
     except Exception as e:
-        return f"Error generating suggestions: {str(e)}"
+        app.logger.error(f"Error generating schedule suggestions: {str(e)}")
+        return []
 
 def analyze_task_dependencies(tasks):
     """Analyze tasks to suggest dependencies and optimal ordering"""
-    
-    tasks_text = "\n".join([
-        f"Task: {task.title} (Project: {Project.query.get(task.project_id).name}, "
-        f"Description: {task.description})"
-        for task in tasks
-    ])
-    
-    prompt = f"""Analyze these tasks and identify potential dependencies:
+    try:
+        # Format tasks for the prompt
+        tasks_text = "\n".join([
+            f"Task: {task.title}\nDescription: {task.description}\nPriority: {task.priority_label}\n"
+            for task in tasks if task.status != 'Completed'
+        ])
+        
+        system_prompt = """You are an AI project management assistant that specializes in analyzing task dependencies and suggesting optimal task ordering.
+Your goal is to identify logical dependencies between tasks and suggest the most efficient way to complete them."""
 
+        user_prompt = f"""Analyze these tasks and suggest:
+1. Potential dependencies between tasks
+2. Optimal ordering for completion
+3. Any tasks that could be grouped or done in parallel
+
+Tasks:
 {tasks_text}
 
-Consider:
-1. Technical dependencies
-2. Logical ordering
-3. Resource constraints
-4. Project relationships
-
 Provide analysis in this format:
-1. [Task] depends on [Dependencies] because [Reasoning]"""
+1. Dependencies: [Task] depends on [Task] because [Reason]
+2. Optimal Order: [Task] -> [Task] -> [Task]
+3. Parallel Tasks: [Task] and [Task] can be done together"""
 
-    try:
-        response = openai.Completion.create(
-            model="gpt-3.5-turbo-instruct",
-            prompt=prompt,
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ],
             temperature=0.7,
             max_tokens=1000
         )
-        return response.choices[0].text
+        
+        return response.choices[0].message.content.strip()
     except Exception as e:
-        return f"Error analyzing dependencies: {str(e)}"
+        app.logger.error(f"Error analyzing task dependencies: {str(e)}")
+        return "Error analyzing task dependencies. Please try again later."
 
 @app.route('/')
 def home():
@@ -277,42 +407,59 @@ def handle_project(project_id):
     return jsonify({'message': 'Project updated successfully'})
 
 @app.route('/api/tasks', methods=['GET', 'POST'])
-def get_tasks():
+def handle_tasks():
     if request.method == 'POST':
         data = request.json
-        task = Task(
+        
+        # Validate required fields
+        if not data.get('title'):
+            return jsonify({'message': 'Title is required'}), 400
+        if not data.get('project_id'):
+            return jsonify({'message': 'Project is required'}), 400
+            
+        # Validate project exists
+        project = Project.query.get(data['project_id'])
+        if not project:
+            return jsonify({'message': 'Selected project does not exist'}), 400
+        
+        new_task = Task(
             title=data['title'],
             description=data.get('description', ''),
-            project_id=data['project_id'],
-            estimated_duration=data.get('estimated_duration', 60),
-            status=data.get('status', 'Pending'),
-            priority=data.get('priority', 2)
+            status=data.get('status', 'Not Started'),
+            priority=data.get('priority', 2),
+            estimated_duration=data.get('estimated_duration'),
+            project_id=data['project_id']
         )
-        db.session.add(task)
+        
+        # Handle dependencies
+        if 'dependencies' in data:
+            for dep_id in data['dependencies']:
+                dep_task = Task.query.get(dep_id)
+                if dep_task:
+                    new_task.dependencies.append(dep_task)
+        
+        db.session.add(new_task)
         db.session.commit()
-        return jsonify({
-            'id': task.id,
-            'title': task.title,
-            'description': task.description,
-            'project_id': task.project_id,
-            'project_name': task.project.name,
-            'estimated_duration': task.estimated_duration,
-            'status': task.status,
-            'priority': task.priority,
-            'priority_label': task.priority_label
-        })
+        return jsonify({'message': 'Task created successfully', 'id': new_task.id}), 201
     
     tasks = Task.query.all()
     return jsonify([{
         'id': task.id,
         'title': task.title,
         'description': task.description,
-        'project_id': task.project_id,
-        'project_name': task.project.name,
-        'estimated_duration': task.estimated_duration,
         'status': task.status,
         'priority': task.priority,
-        'priority_label': task.priority_label
+        'priority_label': task.priority_label,
+        'estimated_duration': task.estimated_duration,
+        'project_id': task.project_id,
+        'project_name': task.project.name if task.project else None,
+        'created_at': task.created_at.isoformat(),
+        'started_at': task.started_at.isoformat() if task.started_at else None,
+        'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+        'actual_duration': task.actual_duration,
+        'progress': task.progress,
+        'dependencies': [dep.id for dep in task.dependencies],
+        'dependent_tasks': [dep.id for dep in task.dependent_tasks]
     } for task in tasks])
 
 @app.route('/api/tasks/<int:task_id>', methods=['PUT', 'DELETE'])
@@ -322,113 +469,84 @@ def handle_task(task_id):
     if request.method == 'DELETE':
         db.session.delete(task)
         db.session.commit()
-        return jsonify({'message': 'Task deleted successfully'})
+        return '', 204
     
     data = request.json
-    task.project_id = data['project_id']
-    task.title = data['title']
-    task.description = data.get('description', '')
-    task.estimated_duration = data.get('estimated_duration', 60)
-    task.status = data.get('status', 'Pending')
-    task.priority = data.get('priority', 2)
+    task.title = data.get('title', task.title)
+    task.description = data.get('description', task.description)
+    
+    # Handle status changes and time tracking
+    new_status = data.get('status')
+    if new_status and new_status != task.status:
+        task.status = new_status
+        if new_status == 'In Progress' and not task.started_at:
+            task.started_at = datetime.utcnow()
+        elif new_status == 'Completed' and not task.completed_at:
+            task.completed_at = datetime.utcnow()
+            if task.started_at:
+                task.actual_duration = int((task.completed_at - task.started_at).total_seconds() / 60)
+    
+    task.priority = data.get('priority', task.priority)
+    task.estimated_duration = data.get('estimated_duration', task.estimated_duration)
+    task.project_id = data.get('project_id', task.project_id)
+    
+    # Update dependencies
+    if 'dependencies' in data:
+        task.dependencies.clear()
+        for dep_id in data['dependencies']:
+            dep_task = Task.query.get(dep_id)
+            if dep_task and dep_task.id != task.id:  # Prevent self-dependency
+                task.dependencies.append(dep_task)
+    
     db.session.commit()
-    return jsonify({'message': 'Task updated successfully'})
+    return jsonify({
+        'id': task.id,
+        'title': task.title,
+        'description': task.description,
+        'status': task.status,
+        'priority': task.priority,
+        'priority_label': task.priority_label,
+        'estimated_duration': task.estimated_duration,
+        'project_id': task.project_id,
+        'project_name': task.project.name if task.project else None,
+        'created_at': task.created_at.isoformat(),
+        'started_at': task.started_at.isoformat() if task.started_at else None,
+        'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+        'actual_duration': task.actual_duration,
+        'progress': task.progress,
+        'dependencies': [dep.id for dep in task.dependencies],
+        'dependent_tasks': [dep.id for dep in task.dependent_tasks]
+    })
 
-@app.route('/api/schedule/suggest', methods=['GET'])
+@app.route('/api/schedule/suggest', methods=['POST'])
 def get_schedule_suggestions():
-    """Get AI-powered schedule suggestions"""
+    """Get AI-powered schedule suggestions for a specific task"""
     try:
-        # Get all unscheduled tasks
-        tasks = Task.query.filter_by(status='Pending').all()
-        if not tasks:
-            return jsonify({'message': 'No tasks to schedule', 'suggestions': []})
-
-        # Get existing calendar events
-        events = Calendar.query.all()
-        existing_events = [
-            {
-                'title': event.title,
-                'start': event.start_time.isoformat(),
-                'end': event.end_time.isoformat()
-            }
-            for event in events
-        ]
-
-        # Current time rounded to next hour
-        current_time = datetime.now()
-        start_time = datetime(
-            current_time.year, current_time.month, current_time.day, 
-            current_time.hour, 0, 0
-        ) + timedelta(hours=1)
-
-        # Sort tasks by combined priority (project + task priority)
-        tasks.sort(key=lambda x: x.priority + x.project.priority)
+        data = request.get_json()
+        task_id = data.get('task_id')
         
-        suggestions = []
-        current_slot = start_time
-
-        def is_weekend(dt):
-            """Check if date is weekend (Saturday=5, Sunday=6)"""
-            return dt.weekday() >= 5
-
-        def next_workday(dt):
-            """Get the next workday, skipping weekends"""
-            while is_weekend(dt):
-                dt = dt + timedelta(days=1)
-            return dt
-
-        # Schedule tasks during working hours (9 AM - 5 PM)
-        for task in tasks:
-            # Calculate combined priority score (lower is higher priority)
-            priority_score = task.priority + task.project.priority
-            
-            # Find next available time slot
-            while True:
-                # Skip weekends
-                if is_weekend(current_slot):
-                    current_slot = next_workday(current_slot).replace(hour=9, minute=0)
-                
-                # Ensure we're within working hours (9 AM - 5 PM)
-                if current_slot.hour < 9:
-                    current_slot = current_slot.replace(hour=9, minute=0)
-                elif current_slot.hour >= 17:
-                    # Move to next workday at 9 AM
-                    next_day = current_slot + timedelta(days=1)
-                    current_slot = next_workday(next_day).replace(hour=9, minute=0)
-                
-                # Check for conflicts with existing events
-                slot_end = current_slot + timedelta(minutes=task.estimated_duration)
-                has_conflict = any(
-                    (event.start_time <= current_slot < event.end_time) or
-                    (event.start_time < slot_end <= event.end_time)
-                    for event in events
-                )
-                
-                if not has_conflict:
-                    break
-                
-                # Try next slot (30-minute increments)
-                current_slot += timedelta(minutes=30)
-            
-            suggestions.append({
-                'task': task.title,
-                'project_name': task.project.name,
-                'suggested_time': current_slot.strftime('%Y-%m-%d %H:%M'),
-                'duration': task.estimated_duration,
-                'reason': f"Priority: {task.priority_label} (Task) + {task.project.priority_label} (Project)",
-                'priority_score': priority_score
-            })
-            
-            # Move time slot to after this task
-            current_slot = slot_end + timedelta(minutes=15)  # 15-minute buffer between tasks
-
-        return jsonify({
-            'message': 'Schedule suggestions generated',
-            'suggestions': suggestions
-        })
-
+        if not task_id:
+            return jsonify({'error': 'Task ID is required'}), 400
+        
+        # Get the task and all calendar events
+        task = Task.query.get(task_id)
+        if not task:
+            return jsonify({'error': 'Task not found'}), 404
+        
+        # Get all tasks for context
+        all_tasks = Task.query.filter(Task.status != 'Completed').all()
+        calendar_events = Calendar.query.filter(
+            Calendar.end_time >= datetime.now()
+        ).order_by(Calendar.start_time).all()
+        
+        # Generate suggestions
+        suggestions = generate_schedule_suggestions([task], calendar_events)
+        
+        return jsonify({'suggestions': suggestions})
+        
     except Exception as e:
-        return jsonify({'error': str(e)}), 500
+        app.logger.error(f"Error getting schedule suggestions: {str(e)}")
+        return jsonify({'error': 'Internal server error'}), 500
 
 @app.route('/api/tasks/analyze', methods=['GET'])
 def analyze_tasks():
@@ -436,36 +554,6 @@ def analyze_tasks():
     tasks = Task.query.all()
     analysis = analyze_task_dependencies(tasks)
     return jsonify({'analysis': analysis})
-
-@app.route('/api/schedule-tasks', methods=['POST'])
-def schedule_tasks():
-    # Get free time slots
-    calendar_events = Calendar.query.all()
-    tasks = Task.query.filter_by(status='Pending').all()
-    
-    # Format the data for AI processing
-    schedule_request = {
-        'events': [{
-            'title': event.title,
-            'start': event.start_time.isoformat(),
-            'end': event.end_time.isoformat()
-        } for event in calendar_events],
-        'tasks': [{
-            'title': task.title,
-            'duration': task.estimated_duration,
-            'project': Project.query.get(task.project_id).name
-        } for task in tasks]
-    }
-    
-    # Use OpenAI to suggest task scheduling
-    response = openai.Completion.create(
-        model="gpt-3.5-turbo-instruct",
-        prompt=f"Please schedule these tasks around the existing calendar events: {json.dumps(schedule_request)}",
-        temperature=0.7,
-        max_tokens=1000
-    )
-    
-    return jsonify({'suggestions': response.choices[0].text})
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
@@ -492,37 +580,58 @@ def approve_suggestion():
     data = request.json
     
     try:
-        # Find the task to get its project information
-        task = Task.query.filter_by(title=data['task']).first()
+        # Get task by ID
+        task_id = data.get('task_id')
+        if not task_id:
+            return jsonify({'error': 'Task ID is required'}), 400
+            
+        task = Task.query.get(task_id)
         if not task:
             return jsonify({'error': 'Task not found'}), 404
 
+        suggested_time = data.get('suggested_time')
+        duration = int(data.get('duration', 60))  # Default to 60 minutes if not specified
+        
+        if not suggested_time:
+            return jsonify({'error': 'Suggested time is required'}), 400
+
+        # Parse the suggested time
+        start_time = datetime.strptime(suggested_time, '%Y-%m-%d %H:%M')
+        end_time = start_time + timedelta(minutes=duration)
+
         # Create a new calendar event from the suggestion
         event = Calendar(
-            title=data['task'],
-            start_time=datetime.strptime(data['suggested_time'], '%Y-%m-%d %H:%M'),
-            end_time=datetime.strptime(data['suggested_time'], '%Y-%m-%d %H:%M') + 
-                    timedelta(minutes=int(data.get('duration', 60))),
+            title=task.title,
+            start_time=start_time,
+            end_time=end_time,
             project_id=task.project_id,
             event_type='task'
         )
+        
+        # Update task status to scheduled
+        task.scheduled_start = start_time
+        task.scheduled_end = end_time
+        
+        # Add and commit changes
         db.session.add(event)
         db.session.commit()
         
         return jsonify({
-            'message': 'Suggestion approved and added to calendar',
+            'message': 'Task scheduled successfully',
             'event': {
                 'id': event.id,
                 'title': event.title,
                 'start': event.start_time.isoformat(),
-                'end': event.end_time.isoformat(),
-                'project_id': event.project_id,
-                'project_name': event.project.name if event.project_id else None,
-                'event_type': event.event_type
+                'end': event.end_time.isoformat()
             }
         })
+        
+    except ValueError as e:
+        app.logger.error(f"Error parsing date/time: {str(e)}")
+        return jsonify({'error': 'Invalid date/time format'}), 400
     except Exception as e:
-        return jsonify({'error': str(e)}), 400
+        app.logger.error(f"Error approving schedule suggestion: {str(e)}")
+        return jsonify({'error': 'Failed to schedule task'}), 500
 
 @app.route('/api/backups', methods=['GET'])
 def get_backups():

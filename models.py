@@ -53,28 +53,62 @@ class Task(db.Model):
         id (int): Primary key
         title (str): Task title
         description (str): Task description
-        project_id (int): Foreign key to associated project
-        estimated_duration (int): Estimated task duration in minutes
-        status (str): Current status (Pending, In Progress, Completed)
+        status (str): Current status (Not Started, In Progress, Completed)
         priority (int): Task priority (1=High, 2=Medium, 3=Low)
+        estimated_duration (int): Estimated duration in minutes
+        project_id (int): Foreign key to associated project
         created_at (datetime): Task creation timestamp
+        dependencies (relationship): Tasks that must be completed before this one
+        actual_duration (int): Actual time spent on task in minutes
+        started_at (datetime): When the task was started
+        completed_at (datetime): When the task was completed
     """
     
     id = db.Column(db.Integer, primary_key=True)
-    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
     title = db.Column(db.String(200), nullable=False)
     description = db.Column(db.Text)
-    estimated_duration = db.Column(db.Integer)  # in minutes
-    status = db.Column(db.String(50), default='Pending')
+    status = db.Column(db.String(50), default='Not Started')
     priority = db.Column(db.Integer, default=2)  # 1: High, 2: Medium, 3: Low
+    estimated_duration = db.Column(db.Integer)  # in minutes
+    project_id = db.Column(db.Integer, db.ForeignKey('project.id'), nullable=False)
     created_at = db.Column(db.DateTime, default=datetime.utcnow)
-    scheduled_start = db.Column(db.DateTime)
-    scheduled_end = db.Column(db.DateTime)
-
+    actual_duration = db.Column(db.Integer, nullable=True)  # in minutes
+    started_at = db.Column(db.DateTime, nullable=True)
+    completed_at = db.Column(db.DateTime, nullable=True)
+    
+    # Task Dependencies
+    dependencies = db.relationship(
+        'Task',
+        secondary='task_dependencies',
+        primaryjoin='Task.id==task_dependencies.c.dependent_task_id',
+        secondaryjoin='Task.id==task_dependencies.c.prerequisite_task_id',
+        backref='dependent_tasks'
+    )
+    
     @property
     def priority_label(self):
         """Convert numeric priority to human-readable label"""
         return {1: 'High', 2: 'Medium', 3: 'Low'}.get(self.priority, 'Medium')
+    
+    @property
+    def progress(self):
+        """Calculate task progress based on status and time tracking"""
+        if self.status == 'Completed':
+            return 100
+        elif self.status == 'Not Started':
+            return 0
+        elif self.started_at and not self.completed_at:
+            elapsed = (datetime.utcnow() - self.started_at).total_seconds() / 60
+            if self.estimated_duration:
+                progress = min(95, (elapsed / self.estimated_duration) * 100)
+                return round(progress)
+        return 50  # Default for "In Progress" without time tracking
+
+# Task Dependencies Association Table
+task_dependencies = db.Table('task_dependencies',
+    db.Column('dependent_task_id', db.Integer, db.ForeignKey('task.id'), primary_key=True),
+    db.Column('prerequisite_task_id', db.Integer, db.ForeignKey('task.id'), primary_key=True)
+)
 
 class Calendar(db.Model):
     """
