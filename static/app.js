@@ -471,8 +471,8 @@ function addScheduleButton(taskItem, task) {
     scheduleButton.innerHTML = '<i class="fas fa-calendar-alt"></i>';
     scheduleButton.title = 'Get AI scheduling suggestions';
     
-    scheduleButton.addEventListener('click', async () => {
-        e.stopPropagation(); // Stop event from bubbling up
+    scheduleButton.addEventListener('click', async (event) => {
+        event.stopPropagation(); // Stop event from bubbling up
         try {
             const response = await fetch('/api/schedule/suggest', {
                 method: 'POST',
@@ -589,6 +589,69 @@ function showSchedulingSuggestions(suggestions, task) {
             }
         });
     });
+}
+
+async function generateSchedule() {
+    try {
+        showLoadingToast('Generating schedule suggestions...');
+        
+        const response = await fetch('/api/schedule/suggest', {
+            method: 'GET'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to generate schedule');
+        }
+        
+        const data = await response.json();
+        if (data.error) {
+            throw new Error(data.error);
+        }
+        
+        // Display suggestions in the modal
+        const suggestionsDiv = document.getElementById('scheduleSuggestions');
+        if (data.suggestions && data.suggestions.length > 0) {
+            const suggestionsHtml = data.suggestions.map(suggestion => `
+                <div class="suggestion-item mb-3">
+                    <h5>${suggestion.task}</h5>
+                    <p><strong>Suggested Time:</strong> ${suggestion.suggested_time}</p>
+                    <p><strong>Reason:</strong> ${suggestion.reason}</p>
+                    <button class="btn btn-sm btn-success" onclick="acceptScheduleSuggestion('${suggestion.task}', '${suggestion.suggested_time}')">
+                        Accept
+                    </button>
+                </div>
+            `).join('');
+            
+            suggestionsDiv.innerHTML = `
+                <div class="alert alert-info">
+                    Here are your AI-powered schedule suggestions:
+                </div>
+                ${suggestionsHtml}
+            `;
+        } else {
+            suggestionsDiv.innerHTML = `
+                <div class="alert alert-warning">
+                    No schedule suggestions available at this time. This might be because:
+                    <ul>
+                        <li>All tasks are already scheduled or completed</li>
+                        <li>No suitable time slots were found</li>
+                        <li>Tasks don't have estimated durations set</li>
+                    </ul>
+                </div>
+            `;
+        }
+        
+        // Show the modal
+        const modal = new bootstrap.Modal(document.getElementById('scheduleModal'));
+        modal.show();
+        
+        hideLoadingToast();
+        showToast('Success', 'Schedule suggestions generated successfully', 'success');
+    } catch (error) {
+        console.error('Error generating schedule:', error);
+        hideLoadingToast();
+        showToast('Error', error.message || 'Failed to generate schedule', 'error');
+    }
 }
 
 // Helper function to format datetime-local input

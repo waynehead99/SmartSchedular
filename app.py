@@ -257,6 +257,43 @@ END"""
         app.logger.error(f"Error generating schedule suggestions: {str(e)}")
         return []
 
+def generate_scheduling_reason(task, dependencies, suggested_time):
+    """Generate a human-readable reason for the scheduling suggestion"""
+    reasons = []
+    
+    # Check dependencies
+    if dependencies:
+        incomplete_deps = [d for d in dependencies if d.status != 'Completed']
+        if incomplete_deps:
+            dep_names = ', '.join([d.title for d in incomplete_deps])
+            reasons.append(f"Waiting for dependencies to complete: {dep_names}")
+        else:
+            reasons.append("All dependencies are completed")
+    
+    # Consider priority
+    if task.priority == 3:
+        reasons.append("High priority task")
+    elif task.priority == 2:
+        reasons.append("Medium priority task")
+    
+    # Consider estimated duration
+    if task.estimated_duration:
+        hours = task.estimated_duration / 60
+        reasons.append(f"Task requires approximately {hours:.1f} hours")
+    
+    # Consider current status
+    if task.status == 'Not Started':
+        reasons.append("Task hasn't been started yet")
+    elif task.status == 'In Progress':
+        reasons.append("Task is already in progress")
+    
+    # Format the suggested time
+    local_time = suggested_time.astimezone()
+    time_str = local_time.strftime("%I:%M %p on %B %d")
+    reasons.append(f"Suggested start time: {time_str}")
+    
+    return " | ".join(reasons)
+
 @app.route('/')
 def home():
     return send_from_directory('static', 'index.html')
@@ -307,7 +344,7 @@ def add_calendar_event():
 
 @app.route('/api/calendar/<int:event_id>', methods=['PUT', 'DELETE'])
 def handle_calendar_event(event_id):
-    event = Calendar.query.get_or_404(event_id)
+    event = db.session.get(Calendar, event_id)
     
     if request.method == 'DELETE':
         db.session.delete(event)
@@ -359,7 +396,7 @@ def handle_projects():
 
 @app.route('/api/projects/<int:project_id>', methods=['PUT', 'DELETE'])
 def handle_project(project_id):
-    project = Project.query.get_or_404(project_id)
+    project = db.session.get(Project, project_id)
     
     if request.method == 'DELETE':
         # Delete associated tasks first
@@ -433,166 +470,186 @@ def handle_tasks():
         'dependent_tasks': [dep.id for dep in task.dependent_tasks]
     } for task in tasks])
 
-@app.route('/api/tasks/<int:task_id>', methods=['PUT', 'DELETE', 'PATCH'])
-def handle_task(task_id):
-    task = Task.query.get_or_404(task_id)
+@app.route('/api/tasks/<int:task_id>', methods=['GET'])
+def get_task(task_id):
+    task = db.session.get(Task, task_id)
+    if task is None:
+        return jsonify({'error': 'Task not found'}), 404
+    return jsonify(task.to_dict())
+
+@app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
+def delete_task(task_id):
+    task = db.session.get(Task, task_id)
+    if task is None:
+        return jsonify({'error': 'Task not found'}), 404
+    db.session.delete(task)
+    db.session.commit()
+    return jsonify({'message': 'Task deleted successfully'})
+
+@app.route('/api/tasks/<int:task_id>', methods=['PUT'])
+def update_task(task_id):
+    task = db.session.get(Task, task_id)
+    if task is None:
+        return jsonify({'error': 'Task not found'}), 404
     
-    if request.method == 'DELETE':
-        db.session.delete(task)
-        db.session.commit()
-        return '', 204
+    data = request.get_json()
     
-    if request.method == 'PATCH':
-        return update_task(task_id)
+    # Update task fields
+    for field in ['title', 'description', 'status', 'priority', 'project_id', 'estimated_duration', 'ticket_number']:
+        if field in data:
+            setattr(task, field, data[field])
     
-    data = request.json
-    task.title = data.get('title', task.title)
-    task.description = data.get('description', task.description)
-    
-    # Handle status changes and time tracking
-    new_status = data.get('status')
-    if new_status and new_status != task.status:
-        task.status = new_status
-        if new_status == 'In Progress' and not task.started_at:
-            task.started_at = datetime.utcnow()
-        elif new_status == 'Completed' and not task.completed_at:
-            task.completed_at = datetime.utcnow()
-            if task.started_at:
-                task.actual_duration = int((task.completed_at - task.started_at).total_seconds() / 60)
-    
-    task.priority = data.get('priority', task.priority)
-    task.estimated_duration = data.get('estimated_duration', task.estimated_duration)
-    task.project_id = data.get('project_id', task.project_id)
+    # Handle completion status
+    if data.get('status') == 'Completed' and not task.completed_at:
+        task.completed_at = datetime.now(pytz.UTC)
+    elif data.get('status') != 'Completed':
+        task.completed_at = None
     
     # Update dependencies
     if 'dependencies' in data:
-        task.dependencies.clear()
+        # Clear existing dependencies
+        task.dependencies = []
+        # Add new dependencies
         for dep_id in data['dependencies']:
-            dep_task = Task.query.get(dep_id)
-            if dep_task and dep_task.id != task.id:  # Prevent self-dependency
-                task.dependencies.append(dep_task)
+            dependency = db.session.get(Task, dep_id)
+            if dependency:
+                task.dependencies.append(dependency)
     
     db.session.commit()
+    return jsonify(task.to_dict())
+
+@app.route('/api/tasks/<int:task_id>/status', methods=['POST'])
+def update_task_status(task_id):
+    task = db.session.get(Task, task_id)
+    if task is None:
+        return jsonify({'error': 'Task not found'}), 404
+    
+    data = request.get_json()
+    new_status = data.get('status')
+    notes = data.get('notes', '')
+    
+    if not new_status:
+        return jsonify({'error': 'Status is required'}), 400
+    
+    # Create status update
+    status_update = StatusUpdate(
+        task_id=task_id,
+        status=new_status,
+        notes=notes,
+        created_at=datetime.now(pytz.UTC)
+    )
+    
+    # Update task status
+    task.status = new_status
+    if new_status == 'Completed':
+        task.completed_at = datetime.now(pytz.UTC)
+    elif task.completed_at:  # If task is being un-completed
+        task.completed_at = None
+    
+    db.session.add(status_update)
+    db.session.commit()
+    
     return jsonify({
-        'id': task.id,
-        'title': task.title,
-        'description': task.description,
-        'status': task.status,
-        'priority': task.priority,
-        'priority_label': task.priority_label,
-        'estimated_duration': task.estimated_duration,
-        'project_id': task.project_id,
-        'project_name': task.project.name if task.project else None,
-        'created_at': task.created_at.isoformat(),
-        'started_at': task.started_at.isoformat() if task.started_at else None,
-        'completed_at': task.completed_at.isoformat() if task.completed_at else None,
-        'actual_duration': task.actual_duration,
-        'progress': task.progress,
-        'dependencies': [dep.id for dep in task.dependencies],
-        'dependent_tasks': [dep.id for dep in task.dependent_tasks]
+        'message': 'Status updated successfully',
+        'status_update': status_update.to_dict()
     })
+
+@app.route('/api/tasks/<int:task_id>/status-history', methods=['GET'])
+def get_task_status_history(task_id):
+    task = db.session.get(Task, task_id)
+    if task is None:
+        return jsonify({'error': 'Task not found'}), 404
+    
+    status_updates = StatusUpdate.query.filter_by(task_id=task_id).order_by(StatusUpdate.created_at.desc()).all()
+    return jsonify([update.to_dict() for update in status_updates])
 
 @app.route('/api/schedule/suggest', methods=['POST'])
 def get_schedule_suggestions():
-    """Get AI-powered schedule suggestions for a specific task"""
-    try:
-        data = request.get_json()
-        task_id = data.get('task_id')
-        
-        if not task_id:
-            return jsonify({'error': 'Task ID is required'}), 400
-        
-        # Get the task and all calendar events
-        task = Task.query.get(task_id)
+    data = request.get_json()
+    task_id = data.get('task_id')
+    
+    if task_id:
+        task = db.session.get(Task, task_id)
         if not task:
             return jsonify({'error': 'Task not found'}), 404
-        
-        # Get all tasks for context
-        all_tasks = Task.query.filter(Task.status != 'Completed').all()
-        calendar_events = Calendar.query.filter(
-            Calendar.end_time >= datetime.now()
-        ).order_by(Calendar.start_time).all()
-        
-        # Generate suggestions
-        suggestions = generate_schedule_suggestions([task], calendar_events)
+        tasks = [task]
+    else:
+        tasks = Task.query.filter(Task.status != 'Completed').all()
+    
+    if not tasks:
+        return jsonify({'message': 'No tasks to schedule', 'suggestions': []})
+    
+    try:
+        suggestions = []
+        for task in tasks:
+            # Consider dependencies
+            dependencies = task.dependencies
+            earliest_start = datetime.now(pytz.UTC)
+            
+            if dependencies:
+                # Find the latest completion time among dependencies
+                latest_dependency = max(
+                    (d.completed_at or datetime.now(pytz.UTC) + timedelta(days=d.estimated_duration/24/60) 
+                     for d in dependencies),
+                    default=earliest_start
+                )
+                earliest_start = max(earliest_start, latest_dependency)
+            
+            # Calculate suggested time slot
+            duration_hours = task.estimated_duration / 60 if task.estimated_duration else 2
+            suggested_time = earliest_start + timedelta(hours=1)  # Add buffer
+            
+            # Format the suggestion
+            suggestions.append({
+                'task': task.title,
+                'task_id': task.id,
+                'suggested_time': suggested_time.isoformat(),
+                'duration': duration_hours,
+                'reason': generate_scheduling_reason(task, dependencies, suggested_time)
+            })
         
         return jsonify({'suggestions': suggestions})
         
     except Exception as e:
-        app.logger.error(f"Error getting schedule suggestions: {str(e)}")
-        return jsonify({'error': 'Internal server error'}), 500
+        app.logger.error(f"Error generating schedule suggestions: {str(e)}")
+        return jsonify({'error': 'Failed to generate schedule suggestions'}), 500
 
 @app.route('/api/tasks/analyze', methods=['GET'])
 def analyze_tasks():
-    """Get AI analysis of task dependencies"""
-    tasks = Task.query.all()
-    analysis = analyze_task_dependencies(tasks)
-    return jsonify({'analysis': analysis})
-
-def analyze_task_dependencies(tasks):
-    """Analyze tasks to suggest dependencies and optimal ordering"""
     try:
-        # Format tasks for the prompt
-        tasks_text = "\n".join([
-            f"Task: {task.title}\nDescription: {task.description or 'No description'}\n"
-            f"Status: {task.status}\nPriority: {task.priority_label}\n"
-            f"Ticket: {task.ticket_number or 'No ticket'}\n"
-            f"Duration: {task.estimated_duration or 'Not specified'} minutes\n"
-            for task in tasks if task.status != 'Completed'
-        ])
+        # Get all incomplete tasks
+        tasks = Task.query.filter(Task.status != 'Completed').all()
+        if not tasks:
+            return jsonify({
+                'message': 'No tasks to analyze',
+                'suggestions': []
+            })
         
-        if not tasks_text:
-            return "No active tasks to analyze."
+        # Prepare task data for analysis
+        task_data = []
+        for task in tasks:
+            dependencies = [db.session.get(Task, dep.id) for dep in task.dependencies]
+            task_info = {
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'status': task.status,
+                'priority': task.priority,
+                'estimated_duration': task.estimated_duration,
+                'ticket_number': task.ticket_number,
+                'dependencies': [dep.title for dep in dependencies if dep],
+                'project': task.project.name if task.project else None
+            }
+            task_data.append(task_info)
         
-        system_prompt = """You are an AI project management assistant that specializes in analyzing task dependencies and suggesting optimal task ordering.
-Your goal is to identify logical dependencies between tasks and suggest the most efficient way to complete them.
-Consider:
-1. Task descriptions and titles for semantic relationships
-2. Priority levels
-3. Estimated durations
-4. Current status
-5. Ticket numbers (tasks with similar ticket numbers might be related)"""
-
-        user_prompt = f"""Analyze these tasks and suggest:
-1. Potential dependencies between tasks (which tasks should be completed before others)
-2. Optimal ordering for task completion
-3. Tasks that could be grouped or done in parallel
-4. Any potential blockers or risks
-
-Tasks to analyze:
-{tasks_text}
-
-Format your response in markdown with these sections:
-## Dependencies
-- List task dependencies and explain why they are related
-
-## Optimal Order
-1. First task to complete
-2. Second task
-3. etc.
-
-## Parallel Work
-- Groups of tasks that can be done simultaneously
-
-## Risks & Recommendations
-- Potential blockers
-- Suggestions for efficiency
-- Any concerns about the current task organization"""
-
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=2000
-        )
+        # Generate AI analysis
+        analysis = analyze_task_dependencies(task_data)
         
-        return response.choices[0].message.content.strip()
+        return jsonify(analysis)
+        
     except Exception as e:
-        app.logger.error(f"Error analyzing task dependencies: {str(e)}")
-        return "Error analyzing task dependencies. Please try again later."
+        app.logger.error(f"Error analyzing tasks: {str(e)}")
+        return jsonify({'error': 'Failed to analyze tasks'}), 500
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
@@ -719,108 +776,6 @@ def restore_backup_endpoint(filename):
     except Exception as e:
         app.logger.error(f"Error restoring backup: {str(e)}")
         return jsonify({'error': str(e)}), 500
-
-@app.route('/api/tasks/<int:task_id>/status', methods=['POST'])
-def update_task_status(task_id):
-    """Update task status and add a status update entry"""
-    try:
-        task = Task.query.get_or_404(task_id)
-        data = request.json
-        
-        if not data.get('status'):
-            return jsonify({'error': 'Status is required'}), 400
-            
-        # Create new status update
-        status_update = StatusUpdate(
-            task_id=task.id,
-            status=data['status'],
-            notes=data.get('notes')
-        )
-        
-        # Update task status
-        task.status = data['status']
-        
-        # Update completion timestamp if needed
-        if data['status'] == 'Completed' and not task.completed_at:
-            task.completed_at = datetime.now()
-        elif data['status'] != 'Completed':
-            task.completed_at = None
-            
-        db.session.add(status_update)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Status updated successfully',
-            'task': task.to_dict()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error updating task status: {str(e)}")
-        return jsonify({'error': 'Failed to update status'}), 500
-
-@app.route('/api/tasks/<int:task_id>/status-history', methods=['GET'])
-def get_task_status_history(task_id):
-    """Get the status update history for a task"""
-    try:
-        task = Task.query.get_or_404(task_id)
-        return jsonify({
-            'task_id': task.id,
-            'task_title': task.title,
-            'status_updates': [update.to_dict() for update in task.status_updates]
-        })
-    except Exception as e:
-        app.logger.error(f"Error getting task status history: {str(e)}")
-        return jsonify({'error': 'Failed to get status history'}), 500
-
-def update_task(task_id):
-    """Update an existing task"""
-    try:
-        task = Task.query.get_or_404(task_id)
-        data = request.json
-        
-        # Update basic fields
-        if 'title' in data:
-            task.title = data['title']
-        if 'description' in data:
-            task.description = data['description']
-        if 'ticket_number' in data:
-            task.ticket_number = data['ticket_number']
-        if 'priority' in data:
-            task.priority = data['priority']
-        if 'estimated_duration' in data:
-            task.estimated_duration = data['estimated_duration']
-            
-        # Handle status change
-        if 'status' in data and data['status'] != task.status:
-            old_status = task.status
-            task.status = data['status']
-            
-            # Create status update
-            status_update = StatusUpdate(
-                task_id=task.id,
-                status=data['status'],
-                notes=f"Status changed from {old_status} to {data['status']}"
-            )
-            db.session.add(status_update)
-            
-            # Update completion timestamp
-            if data['status'] == 'Completed' and not task.completed_at:
-                task.completed_at = datetime.utcnow()
-            elif data['status'] != 'Completed':
-                task.completed_at = None
-        
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Task updated successfully',
-            'task': task.to_dict()
-        })
-        
-    except Exception as e:
-        db.session.rollback()
-        app.logger.error(f"Error updating task: {str(e)}")
-        return jsonify({'error': 'Failed to update task'}), 500
 
 @app.route('/api/status-report', methods=['GET'])
 def generate_status_report():
