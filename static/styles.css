@@ -86,3 +86,25 @@ body {
     display: block;
     color: #6c757d;
 }
+
+/* Backup Management Styles */
+#backups-list {
+    max-height: 300px;
+    overflow-y: auto;
+}
+
+#backups-list .list-group-item {
+    transition: background-color 0.2s;
+}
+
+#backups-list .list-group-item:hover {
+    background-color: #f8f9fa;
+}
+
+#backups-list small.text-muted {
+    font-size: 0.85rem;
+}
+
+#backups-list .btn {
+    min-width: 100px;
+}

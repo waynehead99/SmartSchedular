@@ -28,6 +28,7 @@ from flask_cors import CORS
 from dotenv import load_dotenv
 import openai
 from models import db, Project, Task, Calendar
+from backup_utils import create_backup, restore_backup, list_backups
 
 # Load environment variables
 load_dotenv()
@@ -523,7 +524,55 @@ def approve_suggestion():
     except Exception as e:
         return jsonify({'error': str(e)}), 400
 
+@app.route('/api/backups', methods=['GET'])
+def get_backups():
+    """List all available database backups."""
+    try:
+        backups = list_backups()
+        app.logger.info(f"Found {len(backups)} backups")
+        return jsonify({'backups': backups})
+    except Exception as e:
+        app.logger.error(f"Error listing backups: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backups', methods=['POST'])
+def create_backup_endpoint():
+    """Create a new database backup."""
+    try:
+        app.logger.info("Starting backup creation...")
+        with app.app_context():
+            backup_file = create_backup()
+            app.logger.info(f"Backup created successfully: {backup_file}")
+            return jsonify({
+                'message': 'Backup created successfully',
+                'backup_file': backup_file
+            })
+    except Exception as e:
+        app.logger.error(f"Error creating backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backups/restore/<filename>', methods=['POST'])
+def restore_backup_endpoint(filename):
+    """Restore database from a specific backup file."""
+    try:
+        app.logger.info(f"Attempting to restore backup: {filename}")
+        backup_path = os.path.join('backups', filename)
+        if not os.path.exists(backup_path):
+            app.logger.error(f"Backup file not found: {backup_path}")
+            return jsonify({'error': 'Backup file not found'}), 404
+
+        success = restore_backup(backup_path)
+        if success:
+            app.logger.info("Database restored successfully")
+            return jsonify({'message': 'Database restored successfully'})
+        else:
+            app.logger.error("Failed to restore database")
+            return jsonify({'error': 'Failed to restore database'}), 500
+    except Exception as e:
+        app.logger.error(f"Error restoring backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(host='0.0.0.0', port=5000)
+    app.run(host='0.0.0.0', port=5001)

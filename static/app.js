@@ -62,6 +62,7 @@ document.addEventListener('DOMContentLoaded', function() {
     // Load initial data
     loadProjects();
     loadTasks();
+    loadBackups();
 });
 
 // Initialize Bootstrap tooltips and popovers
@@ -546,6 +547,98 @@ function getPriorityClass(priority) {
         2: 'bg-warning',   // Medium priority
         3: 'bg-info'       // Low priority
     }[priority] || 'bg-secondary';
+}
+
+// Backup Management Functions
+let selectedBackupFile = null;
+
+function loadBackups() {
+    fetch('/api/backups')
+        .then(response => response.json())
+        .then(data => {
+            const backupsList = document.getElementById('backups-list');
+            backupsList.innerHTML = '';
+
+            if (data.backups.length === 0) {
+                backupsList.innerHTML = '<div class="list-group-item text-muted">No backups available</div>';
+                return;
+            }
+
+            data.backups.forEach(backup => {
+                const size = formatFileSize(backup.size);
+                const backupItem = document.createElement('div');
+                backupItem.className = 'list-group-item d-flex justify-content-between align-items-center';
+                backupItem.innerHTML = `
+                    <div>
+                        <h6 class="mb-1">${backup.filename}</h6>
+                        <small class="text-muted">Created: ${backup.timestamp}</small>
+                        <small class="text-muted ms-2">Size: ${size}</small>
+                    </div>
+                    <button class="btn btn-outline-primary btn-sm" onclick="showRestoreBackupModal('${backup.filename}', '${backup.timestamp}')">
+                        <i class="fas fa-undo"></i> Restore
+                    </button>
+                `;
+                backupsList.appendChild(backupItem);
+            });
+        })
+        .catch(error => {
+            console.error('Error loading backups:', error);
+            showToast('Error', 'Failed to load backups', 'error');
+        });
+}
+
+function createBackup() {
+    fetch('/api/backups', {
+        method: 'POST'
+    })
+        .then(response => response.json())
+        .then(data => {
+            showToast('Success', 'Backup created successfully', 'success');
+            loadBackups();
+        })
+        .catch(error => {
+            console.error('Error creating backup:', error);
+            showToast('Error', 'Failed to create backup', 'error');
+        });
+}
+
+function showRestoreBackupModal(filename, timestamp) {
+    selectedBackupFile = filename;
+    const details = document.getElementById('restore-backup-details');
+    details.textContent = `Backup from: ${timestamp}`;
+    const modal = new bootstrap.Modal(document.getElementById('restoreBackupModal'));
+    modal.show();
+}
+
+function confirmRestoreBackup() {
+    if (!selectedBackupFile) return;
+
+    fetch(`/api/backups/restore/${selectedBackupFile}`, {
+        method: 'POST'
+    })
+        .then(response => response.json())
+        .then(data => {
+            showToast('Success', 'Database restored successfully', 'success');
+            // Reload all data
+            loadProjects();
+            loadTasks();
+            calendar.refetchEvents();
+            // Close the modal
+            const modal = bootstrap.Modal.getInstance(document.getElementById('restoreBackupModal'));
+            modal.hide();
+        })
+        .catch(error => {
+            console.error('Error restoring backup:', error);
+            showToast('Error', 'Failed to restore backup', 'error');
+        });
+}
+
+function formatFileSize(bytes) {
+    if (bytes === 0) return '0 Bytes';
+    const k = 1024;
+    const sizes = ['Bytes', 'KB', 'MB', 'GB'];
+    const i = Math.floor(Math.log(bytes) / Math.log(k));
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(2)) + ' ' + sizes[i];
 }
 
 // AI Functions
