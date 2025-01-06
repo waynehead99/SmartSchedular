@@ -47,7 +47,11 @@ app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 db.init_app(app)
 
 # Initialize OpenAI client
-client = openai.OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+from openai import OpenAI
+client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
+
+if not os.getenv('OPENAI_API_KEY'):
+    print("Warning: OPENAI_API_KEY not set. AI features will not work.")
 
 def is_working_hours(dt):
     """Check if a datetime is within working hours (7 AM to 4 PM MST) on weekdays"""
@@ -293,6 +297,35 @@ def generate_scheduling_reason(task, dependencies, suggested_time):
     reasons.append(f"Suggested start time: {time_str}")
     
     return " | ".join(reasons)
+
+def analyze_task_dependencies(task_data):
+    """Analyze task dependencies and generate insights using AI."""
+    try:
+        prompt = f"""Analyze these tasks and their dependencies:
+{json.dumps(task_data, indent=2)}
+
+Please provide a concise analysis focusing on:
+1. Critical path tasks that need immediate attention
+2. Potential bottlenecks in task dependencies
+3. Scheduling recommendations based on priorities and dependencies
+4. Any risks or issues that need attention
+
+Keep the analysis practical and actionable."""
+
+        response = client.chat.completions.create(
+            model="gpt-4",
+            messages=[
+                {"role": "system", "content": "You are a project management assistant analyzing task dependencies and providing insights."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=1000,
+            temperature=0.7
+        )
+        
+        return response.choices[0].message.content
+    except Exception as e:
+        app.logger.error(f"Error in AI analysis: {str(e)}")
+        return "Error generating analysis. Please try again later."
 
 @app.route('/')
 def home():
