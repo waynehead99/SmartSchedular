@@ -655,7 +655,7 @@ def analyze_tasks():
         if not tasks:
             return jsonify({
                 'message': 'No tasks to analyze',
-                'suggestions': []
+                'analysis': 'No tasks found to analyze.'
             })
         
         # Prepare task data for analysis
@@ -678,11 +678,17 @@ def analyze_tasks():
         # Generate AI analysis
         analysis = analyze_task_dependencies(task_data)
         
-        return jsonify(analysis)
+        return jsonify({
+            'message': 'Analysis completed successfully',
+            'analysis': analysis
+        })
         
     except Exception as e:
         app.logger.error(f"Error analyzing tasks: {str(e)}")
-        return jsonify({'error': 'Failed to analyze tasks'}), 500
+        return jsonify({
+            'error': 'Failed to analyze tasks',
+            'analysis': 'Error generating analysis. Please try again later.'
+        }), 500
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
