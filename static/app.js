@@ -681,11 +681,25 @@ async function saveEvent() {
             body: JSON.stringify(event)
         });
 
-        if (response.ok) {
-            location.reload();
+        if (!response.ok) {
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to save event');
         }
+
+        // Close the modal
+        const modal = bootstrap.Modal.getInstance(document.getElementById('addEventModal'));
+        if (modal) {
+            modal.hide();
+        }
+
+        // Refresh the calendar events
+        calendar.refetchEvents();
+        
+        // Show success message
+        showToast('Success', 'Event saved successfully', 'success');
     } catch (error) {
         console.error('Error saving event:', error);
+        showToast('Error', error.message || 'Failed to save event', 'error');
     }
 }
 

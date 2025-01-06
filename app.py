@@ -353,45 +353,65 @@ def get_calendar_events():
 
 @app.route('/api/calendar', methods=['POST'])
 def add_calendar_event():
-    data = request.json
-    event = Calendar(
-        title=data['title'],
-        description=data.get('description'),
-        start_time=datetime.fromisoformat(data['start']),
-        end_time=datetime.fromisoformat(data['end']),
-        project_id=data.get('project_id'),
-        event_type=data.get('event_type', 'event')
-    )
-    db.session.add(event)
-    db.session.commit()
-    return jsonify({
-        'id': event.id,
-        'title': event.title,
-        'start': event.start_time.isoformat(),
-        'end': event.end_time.isoformat(),
-        'description': event.description,
-        'project_id': event.project_id,
-        'project_name': event.project.name if event.project_id else None,
-        'event_type': event.event_type
-    })
+    try:
+        data = request.json
+        event = Calendar(
+            title=data['title'],
+            description=data.get('description'),
+            start_time=datetime.fromisoformat(data['start_time']),
+            end_time=datetime.fromisoformat(data['end_time']),
+            project_id=data.get('project_id'),
+            event_type=data.get('event_type', 'event')
+        )
+        db.session.add(event)
+        db.session.commit()
+        
+        return jsonify({
+            'id': event.id,
+            'title': event.title,
+            'start': event.start_time.isoformat(),
+            'end': event.end_time.isoformat(),
+            'description': event.description,
+            'project_id': event.project_id,
+            'project_name': event.project.name if event.project_id else None,
+            'event_type': event.event_type
+        })
+    except Exception as e:
+        app.logger.error(f"Error adding calendar event: {str(e)}")
+        return jsonify({'error': 'Failed to add event'}), 500
 
 @app.route('/api/calendar/<int:event_id>', methods=['PUT', 'DELETE'])
 def handle_calendar_event(event_id):
-    event = db.session.get(Calendar, event_id)
-    
-    if request.method == 'DELETE':
-        db.session.delete(event)
+    try:
+        event = db.session.get(Calendar, event_id)
+        if not event:
+            return jsonify({'error': 'Event not found'}), 404
+        
+        if request.method == 'DELETE':
+            db.session.delete(event)
+            db.session.commit()
+            return jsonify({'message': 'Event deleted successfully'})
+        
+        data = request.json
+        event.title = data['title']
+        event.start_time = datetime.fromisoformat(data['start_time'])
+        event.end_time = datetime.fromisoformat(data['end_time'])
+        event.description = data.get('description', '')
+        
         db.session.commit()
-        return jsonify({'message': 'Event deleted successfully'})
-    
-    data = request.json
-    event.title = data['title']
-    event.start_time = datetime.fromisoformat(data['start_time'])
-    event.end_time = datetime.fromisoformat(data['end_time'])
-    event.description = data.get('description', '')
-    
-    db.session.commit()
-    return jsonify({'message': 'Event updated successfully'})
+        return jsonify({
+            'id': event.id,
+            'title': event.title,
+            'start': event.start_time.isoformat(),
+            'end': event.end_time.isoformat(),
+            'description': event.description,
+            'project_id': event.project_id,
+            'project_name': event.project.name if event.project_id else None,
+            'event_type': event.event_type
+        })
+    except Exception as e:
+        app.logger.error(f"Error handling calendar event: {str(e)}")
+        return jsonify({'error': 'Failed to handle event'}), 500
 
 @app.route('/api/projects', methods=['GET', 'POST'])
 def handle_projects():
