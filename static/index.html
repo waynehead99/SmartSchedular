@@ -301,25 +301,34 @@
                         <textarea class="form-control" id="projectDescription" rows="3"></textarea>
                     </div>
                     <div class="mb-3">
+                        <label for="projectDueDate" class="form-label">Due Date</label>
+                        <input type="date" class="form-control" id="projectDueDate">
+                    </div>
+                    <div class="mb-3">
+                        <label for="projectColor" class="form-label">Color</label>
+                        <input type="color" class="form-control form-control-color" id="projectColor" value="#6c757d">
+                    </div>
+                    <div class="mb-3">
                         <label for="projectStatus" class="form-label">Status</label>
-                        <select class="form-control" id="projectStatus">
-                            <option value="In Progress">In Progress</option>
-                            <option value="Completed">Completed</option>
-                            <option value="On Hold">On Hold</option>
+                        <select class="form-select" id="projectStatus">
+                            <option value="active">Active</option>
+                            <option value="on_hold">On Hold</option>
+                            <option value="completed">Completed</option>
+                            <option value="cancelled">Cancelled</option>
                         </select>
                     </div>
                     <div class="mb-3">
                         <label for="projectPriority" class="form-label">Priority</label>
-                        <select class="form-control" id="projectPriority">
-                            <option value="1">High</option>
-                            <option value="2" selected>Medium</option>
-                            <option value="3">Low</option>
+                        <select class="form-select" id="projectPriority">
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high">High</option>
                         </select>
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <button type="button" class="btn btn-danger me-auto" id="deleteProjectBtn" style="display: none;">Delete</button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-danger" id="deleteProjectBtn" style="display: none;">Delete</button>
                     <button type="button" class="btn btn-primary" onclick="saveProject()">Save</button>
                 </div>
             </div>

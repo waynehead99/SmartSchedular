@@ -730,181 +730,176 @@ function displayProjects() {
     });
 }
 
-function showAddProjectModal() {
-    const modalHtml = `
-        <div class="modal fade" id="addProjectModal" tabindex="-1">
-            <div class="modal-dialog">
-                <div class="modal-content">
-                    <div class="modal-header">
-                        <h5 class="modal-title">Add New Project</h5>
-                        <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
-                    </div>
-                    <div class="modal-body">
-                        <div class="form-group">
-                            <label for="projectName">Project Name</label>
-                            <input type="text" class="form-control" id="projectName" required>
-                        </div>
-                    </div>
-                    <div class="modal-footer">
-                        <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                        <button type="button" class="btn btn-primary" onclick="createProject()">Create Project</button>
-                    </div>
-                </div>
-            </div>
-        </div>
-    `;
-
-    // Remove existing modal if any
-    const existingModal = document.getElementById('addProjectModal');
-    if (existingModal) {
-        existingModal.remove();
+async function editProject(projectId) {
+    try {
+        showLoading('Loading project...');
+        
+        // Fetch project details
+        const response = await fetch(`/api/projects/${projectId}`);
+        if (!response.ok) {
+            throw new Error('Failed to fetch project');
+        }
+        
+        const project = await response.json();
+        
+        // Populate the modal
+        const modal = new bootstrap.Modal(document.getElementById('addProjectModal'));
+        document.getElementById('projectId').value = project.id;
+        document.getElementById('projectName').value = project.name;
+        document.getElementById('projectDescription').value = project.description || '';
+        document.getElementById('projectDueDate').value = project.due_date ? project.due_date.split('T')[0] : '';
+        document.getElementById('projectColor').value = project.color || '#6c757d';
+        document.getElementById('projectStatus').value = project.status || 'active';
+        document.getElementById('projectPriority').value = project.priority || 'medium';
+        
+        // Update modal title
+        document.getElementById('projectModalTitle').textContent = 'Edit Project';
+        
+        // Show delete button
+        const deleteBtn = document.getElementById('deleteProjectBtn');
+        if (deleteBtn) {
+            deleteBtn.style.display = 'block';
+            deleteBtn.onclick = () => deleteProject(projectId);
+        }
+        
+        modal.show();
+    } catch (error) {
+        console.error('Error loading project:', error);
+        showToast('error', error.message || 'Failed to load project');
+    } finally {
+        hideLoading();
     }
+}
 
-    // Add new modal
-    document.body.insertAdjacentHTML('beforeend', modalHtml);
-
-    // Show modal
-    const modal = new bootstrap.Modal(document.getElementById('addProjectModal'));
-    modal.show();
+async function deleteProject(projectId) {
+    if (!confirm('Are you sure you want to delete this project? This will also delete all associated tasks.')) {
+        return;
+    }
+    
+    try {
+        showLoading('Deleting project...');
+        
+        const response = await fetch(`/api/projects/${projectId}`, {
+            method: 'DELETE'
+        });
+        
+        if (!response.ok) {
+            throw new Error('Failed to delete project');
+        }
+        
+        // Close modal if open
+        const modal = bootstrap.Modal.getInstance(document.getElementById('addProjectModal'));
+        if (modal) {
+            modal.hide();
+        }
+        
+        showToast('success', 'Project deleted successfully');
+        loadProjects(); // Refresh the list
+    } catch (error) {
+        console.error('Error deleting project:', error);
+        showToast('error', error.message || 'Failed to delete project');
+    } finally {
+        hideLoading();
+    }
 }
 
 async function saveProject() {
-    const projectId = document.getElementById('projectId').value;
-    const projectData = {
-        name: document.getElementById('projectName').value,
-        description: document.getElementById('projectDescription').value,
-        status: document.getElementById('projectStatus').value,
-        priority: document.getElementById('projectPriority').value
-    };
-
     try {
-        const url = projectId ? `/api/projects/${projectId}` : '/api/projects';
+        showLoading('Saving project...');
+        
+        // Get form values
+        const projectId = document.getElementById('projectId').value;
+        const name = document.getElementById('projectName').value;
+        const description = document.getElementById('projectDescription').value;
+        const dueDate = document.getElementById('projectDueDate').value;
+        const color = document.getElementById('projectColor').value;
+        const status = document.getElementById('projectStatus').value;
+        const priority = document.getElementById('projectPriority').value;
+        
+        // Validate required fields
+        if (!name) {
+            throw new Error('Project name is required');
+        }
+        
+        const projectData = {
+            name,
+            description,
+            due_date: dueDate || null,
+            color,
+            status,
+            priority
+        };
+        
+        // Determine if this is an update or create
         const method = projectId ? 'PUT' : 'POST';
+        const url = projectId ? `/api/projects/${projectId}` : '/api/projects';
         
         const response = await fetch(url, {
-            method: method,
+            method,
             headers: {
                 'Content-Type': 'application/json'
             },
             body: JSON.stringify(projectData)
         });
-
+        
         if (!response.ok) {
-            throw new Error('Failed to save project');
+            const data = await response.json();
+            throw new Error(data.error || 'Failed to save project');
         }
-
-        // Hide the modal
+        
+        // Close modal
         const modal = bootstrap.Modal.getInstance(document.getElementById('addProjectModal'));
-        modal.hide();
-
-        // Reset the form
+        if (modal) {
+            modal.hide();
+        }
+        
+        // Reset form
         document.getElementById('projectId').value = '';
         document.getElementById('projectName').value = '';
         document.getElementById('projectDescription').value = '';
-        document.getElementById('projectStatus').value = 'In Progress';
-        document.getElementById('projectPriority').value = '2';
-        document.getElementById('deleteProjectBtn').style.display = 'none';
-        document.getElementById('projectModalTitle').textContent = 'Add Project';
-
-        // Reload projects and tasks
-        showToast('success', 'Project saved successfully');
-        await loadProjects();
-        await loadTasks();
+        document.getElementById('projectDueDate').value = '';
+        document.getElementById('projectColor').value = '#6c757d';
+        document.getElementById('projectStatus').value = 'active';
+        document.getElementById('projectPriority').value = 'medium';
+        
+        // Hide delete button
+        const deleteBtn = document.getElementById('deleteProjectBtn');
+        if (deleteBtn) {
+            deleteBtn.style.display = 'none';
+        }
+        
+        showToast('success', `Project ${projectId ? 'updated' : 'created'} successfully`);
+        loadProjects(); // Refresh the list
     } catch (error) {
         console.error('Error saving project:', error);
-        showToast('error', 'Failed to save project');
+        showToast('error', error.message || 'Failed to save project');
+    } finally {
+        hideLoading();
     }
 }
 
-async function deleteProject(projectId) {
-    if (confirm('Are you sure you want to delete this project? All associated tasks will also be deleted.')) {
-        try {
-            const response = await fetch(`/api/projects/${projectId}`, {
-                method: 'DELETE'
-            });
-
-            if (!response.ok) {
-                throw new Error('Failed to delete project');
-            }
-
-            // Refresh the projects list and tasks
-            loadProjects();
-            loadTasks();
-        } catch (error) {
-        console.error('Error deleting project:', error);
-        showToast('error', 'Failed to delete project');
+function showAddProjectModal() {
+    // Reset form
+    document.getElementById('projectId').value = '';
+    document.getElementById('projectName').value = '';
+    document.getElementById('projectDescription').value = '';
+    document.getElementById('projectDueDate').value = '';
+    document.getElementById('projectColor').value = '#6c757d';
+    document.getElementById('projectStatus').value = 'active';
+    document.getElementById('projectPriority').value = 'medium';
+    
+    // Hide delete button
+    const deleteBtn = document.getElementById('deleteProjectBtn');
+    if (deleteBtn) {
+        deleteBtn.style.display = 'none';
     }
-}
-}
-async function editProject(projectId) {
-    try {
-        const response = await fetch(`/api/projects/${projectId}`);
-        if (!response.ok) {
-            throw new Error('Failed to load project details');
-        }
-        
-        const project = await response.json();
-        
-        // Populate form fields
-        document.getElementById('projectId').value = project.id;
-        document.getElementById('projectName').value = project.name;
-        document.getElementById('projectDescription').value = project.description || '';
-        document.getElementById('projectStatus').value = project.status;
-        document.getElementById('projectPriority').value = project.priority;
-        
-        // Show the delete button for existing projects
-        document.getElementById('deleteProjectBtn').style.display = 'block';
-        document.getElementById('projectModalTitle').textContent = 'Edit Project';
-        
-        // Show the modal
-        const modal = new bootstrap.Modal(document.getElementById('addProjectModal'));
-        modal.show();
-    } catch (error) {
-        console.error('Error loading project:', error);
-        showToast('error', 'Failed to load project details');
-    }
-}
-
-async function loadProjectsForTaskModal(selectId = 'taskProject', selectedProjectId = null) {
-    try {
-        const response = await fetch('/api/projects');
-        if (!response.ok) {
-            throw new Error('Failed to load projects');
-        }
-        
-        const data = await response.json();
-        const select = document.getElementById(selectId);
-        
-        if (!select) {
-            console.error(`Project select element with id ${selectId} not found`);
-            return;
-        }
-        
-        // Clear existing options
-        select.innerHTML = '';
-        
-        // Add default option
-        const defaultOption = document.createElement('option');
-        defaultOption.value = '';
-        defaultOption.textContent = '-- Select Project --';
-        select.appendChild(defaultOption);
-        
-        // Add project options
-        data.forEach(project => {
-            const option = document.createElement('option');
-            option.value = project.id;
-            option.textContent = project.name;
-            select.appendChild(option);
-        });
-        
-        // Set selected project if provided
-        if (selectedProjectId) {
-            select.value = selectedProjectId;
-        }
-    } catch (error) {
-        console.error('Error loading projects for task modal:', error);
-        showToast('error', 'Failed to load projects');
-    }
+    
+    // Update modal title
+    document.getElementById('projectModalTitle').textContent = 'Add Project';
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('addProjectModal'));
+    modal.show();
 }
 
 // Event Management Functions
@@ -1522,7 +1517,8 @@ function isColorTooSimilarToExisting(newColor) {
 // Check if a color is too dark
 function isColorTooDark(color) {
     const rgb = hexToRgb(color);
-    const brightness = (rgb.r * 299 + rgb.g * 587 + rgb.b * 114) / 1000;
+    const brightness = (0.299 * rgb.r + 0.587 * rgb.g + 0.114 * rgb.b) / 255;
+    
     return brightness < 128;
 }
 
@@ -1960,13 +1956,9 @@ function displayTasks() {
         taskDiv.innerHTML = `
             <div class="item-header d-flex justify-content-between align-items-center p-2" style="cursor: pointer;" onclick="toggleTaskDetails(${task.id})">
                 <div>
-                    <span class="task-title">
-                        <i class="fas fa-chevron-right me-1"></i>
-                        ${task.title}
-                    </span>
-                    <span class="badge" style="background-color: ${statusBadgeColor}; color: ${statusBadgeTextColor}">
-                        ${projectName}
-                    </span>
+                    <span class="badge" style="background-color: ${projectColor}">&nbsp;</span>
+                    <span class="task-title">${task.title}</span>
+                    <span class="badge ${getStatusClass(task.status)}">${task.status}</span>
                 </div>
                 <div>
                     <button class="btn btn-sm btn-link text-muted" onclick="event.stopPropagation(); editTask(${task.id})">
