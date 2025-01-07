@@ -349,73 +349,62 @@
                         <input type="text" class="form-control" id="taskTitle" required>
                     </div>
                     <div class="mb-3">
-                        <label for="taskTicketNumber" class="form-label">Ticket Number</label>
-                        <input type="text" class="form-control" id="taskTicketNumber" placeholder="Enter ticket number">
-                    </div>
-                    <div class="mb-3">
                         <label for="taskDescription" class="form-label">Description</label>
                         <textarea class="form-control" id="taskDescription" rows="3"></textarea>
                     </div>
                     <div class="mb-3">
                         <label for="taskProject" class="form-label">Project</label>
                         <select class="form-select" id="taskProject" required>
-                            <!-- Projects will be loaded dynamically -->
+                            <option value="">-- Select Project --</option>
+                        </select>
+                    </div>
+                    <div class="mb-3">
+                        <label for="taskDueDate" class="form-label">Due Date</label>
+                        <input type="date" class="form-control" id="taskDueDate">
+                    </div>
+                    <div class="mb-3">
+                        <label for="taskStatus" class="form-label">Status</label>
+                        <select class="form-select" id="taskStatus">
+                            <option value="pending">Pending</option>
+                            <option value="in_progress">In Progress</option>
+                            <option value="completed">Completed</option>
+                            <option value="blocked">Blocked</option>
                         </select>
                     </div>
                     <div class="mb-3">
                         <label for="taskPriority" class="form-label">Priority</label>
                         <select class="form-select" id="taskPriority">
-                            <option value="1">High</option>
-                            <option value="2" selected>Medium</option>
-                            <option value="3">Low</option>
+                            <option value="low">Low</option>
+                            <option value="medium">Medium</option>
+                            <option value="high">High</option>
                         </select>
                     </div>
                     <div class="mb-3">
-                        <label for="taskDuration" class="form-label">Estimated Duration (minutes)</label>
-                        <input type="number" class="form-control" id="taskDuration" min="1" value="60">
+                        <label for="taskEstimatedHours" class="form-label">Estimated Hours</label>
+                        <input type="number" class="form-control" id="taskEstimatedHours" min="0" step="0.5">
                     </div>
-                    <div class="mb-3">
-                        <label for="taskStatus" class="form-label">Status</label>
-                        <select class="form-select" id="taskStatus">
-                            <option value="Not Started" selected>Not Started</option>
-                            <option value="In Progress">In Progress</option>
-                            <option value="On Hold">On Hold</option>
-                            <option value="Completed">Completed</option>
-                        </select>
-                    </div>
-                    <div class="mb-3">
-                        <label for="taskDependencies" class="form-label">Dependencies</label>
-                        <select class="form-select" id="taskDependencies" multiple>
-                            <!-- Tasks will be loaded dynamically -->
-                        </select>
-                        <small class="form-text text-muted">Select tasks that must be completed before this one</small>
-                    </div>
-                    <div id="taskTimeTracking" class="mb-3" style="display: none;">
+                    <div id="taskTimeTracking" class="border rounded p-3 mb-3" style="display: none;">
                         <h6>Time Tracking</h6>
                         <div class="row">
                             <div class="col">
-                                <small>Started: <span id="taskStartedAt">-</span></small>
+                                <small class="text-muted">Started:</small>
+                                <div id="taskStartedAt">-</div>
                             </div>
                             <div class="col">
-                                <small>Completed: <span id="taskCompletedAt">-</span></small>
-                            </div>
-                        </div>
-                        <div class="row mt-2">
-                            <div class="col">
-                                <small>Actual Duration: <span id="taskActualDuration">-</span></small>
+                                <small class="text-muted">Completed:</small>
+                                <div id="taskCompletedAt">-</div>
                             </div>
                             <div class="col">
-                                <div class="progress">
-                                    <div id="taskProgressBar" class="progress-bar" role="progressbar" style="width: 0%"></div>
-                                </div>
+                                <small class="text-muted">Actual Duration:</small>
+                                <div id="taskActualDuration">-</div>
                             </div>
                         </div>
                     </div>
                 </div>
                 <div class="modal-footer">
+                    <button type="button" class="btn btn-danger me-auto" id="deleteTaskBtn" style="display: none;">Delete</button>
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-danger" id="deleteTaskBtn" style="display: none;">Delete</button>
-                    <button type="button" class="btn btn-primary" id="addTaskModalSaveBtn">Save</button>
+                    <button type="button" class="btn btn-primary" onclick="saveTask()">Save</button>
                 </div>
             </div>
         </div>
@@ -436,10 +425,6 @@
                             <input type="text" class="form-control" id="editTaskTitle" required>
                         </div>
                         <div class="mb-3">
-                            <label for="editTaskTicketNumber" class="form-label">Ticket Number</label>
-                            <input type="text" class="form-control" id="editTaskTicketNumber" placeholder="Enter ticket number">
-                        </div>
-                        <div class="mb-3">
                             <label for="editTaskDescription" class="form-label">Description</label>
                             <textarea class="form-control" id="editTaskDescription" rows="3"></textarea>
                         </div>
@@ -450,46 +435,44 @@
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="editTaskPriority" class="form-label">Priority</label>
-                            <select class="form-select" id="editTaskPriority">
-                                <option value="1">High</option>
-                                <option value="2" selected>Medium</option>
-                                <option value="3">Low</option>
-                            </select>
-                        </div>
-                        <div class="mb-3">
-                            <label for="editTaskDuration" class="form-label">Estimated Duration (minutes)</label>
-                            <input type="number" class="form-control" id="editTaskDuration" min="1" value="60">
+                            <label for="editTaskDueDate" class="form-label">Due Date</label>
+                            <input type="date" class="form-control" id="editTaskDueDate">
                         </div>
                         <div class="mb-3">
                             <label for="editTaskStatus" class="form-label">Status</label>
                             <select class="form-select" id="editTaskStatus">
-                                <option value="Not Started">Not Started</option>
-                                <option value="In Progress">In Progress</option>
-                                <option value="On Hold">On Hold</option>
-                                <option value="Completed">Completed</option>
+                                <option value="pending">Pending</option>
+                                <option value="in_progress">In Progress</option>
+                                <option value="completed">Completed</option>
+                                <option value="blocked">Blocked</option>
                             </select>
                         </div>
                         <div class="mb-3">
-                            <label for="editTaskDependencies" class="form-label">Dependencies</label>
-                            <select class="form-select" id="editTaskDependencies" multiple>
-                                <!-- Tasks will be loaded dynamically -->
+                            <label for="editTaskPriority" class="form-label">Priority</label>
+                            <select class="form-select" id="editTaskPriority">
+                                <option value="low">Low</option>
+                                <option value="medium">Medium</option>
+                                <option value="high">High</option>
                             </select>
-                            <small class="form-text text-muted">Select tasks that must be completed before this one</small>
                         </div>
-                        <div id="editTaskTimeTracking" class="mb-3">
+                        <div class="mb-3">
+                            <label for="editTaskEstimatedHours" class="form-label">Estimated Hours</label>
+                            <input type="number" class="form-control" id="editTaskEstimatedHours" min="0" step="0.5">
+                        </div>
+                        <div id="editTaskTimeTracking" class="border rounded p-3 mb-3">
                             <h6>Time Tracking</h6>
                             <div class="row">
                                 <div class="col">
-                                    <small>Started: <span id="editTaskStartedAt">-</span></small>
+                                    <small class="text-muted">Started:</small>
+                                    <div id="editTaskStartedAt">-</div>
                                 </div>
                                 <div class="col">
-                                    <small>Completed: <span id="editTaskCompletedAt">-</span></small>
+                                    <small class="text-muted">Completed:</small>
+                                    <div id="editTaskCompletedAt">-</div>
                                 </div>
-                            </div>
-                            <div class="row mt-2">
                                 <div class="col">
-                                    <small>Actual Duration: <span id="editTaskActualDuration">-</span></small>
+                                    <small class="text-muted">Actual Duration:</small>
+                                    <div id="editTaskActualDuration">-</div>
                                 </div>
                             </div>
                         </div>

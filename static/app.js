@@ -1982,3 +1982,82 @@ function displayTasks() {
         tasksList.appendChild(taskDiv);
     });
 }
+
+// Function to load projects for task modal
+async function loadProjectsForTaskModal(selectId = 'taskProject', selectedProjectId = null) {
+    try {
+        showLoading('Loading projects...');
+        
+        const response = await fetch('/api/projects');
+        if (!response.ok) {
+            throw new Error('Failed to load projects');
+        }
+        
+        const projects = await response.json();
+        const select = document.getElementById(selectId);
+        
+        if (!select) {
+            console.error(`Project select element with id ${selectId} not found`);
+            return;
+        }
+        
+        // Clear existing options
+        select.innerHTML = '';
+        
+        // Add default option
+        const defaultOption = document.createElement('option');
+        defaultOption.value = '';
+        defaultOption.textContent = '-- Select Project --';
+        select.appendChild(defaultOption);
+        
+        // Add project options
+        projects.forEach(project => {
+            const option = document.createElement('option');
+            option.value = project.id;
+            option.textContent = project.name;
+            if (project.color) {
+                option.style.backgroundColor = project.color;
+                option.style.color = getContrastColor(project.color);
+            }
+            select.appendChild(option);
+        });
+        
+        // Set selected project if provided
+        if (selectedProjectId) {
+            select.value = selectedProjectId;
+        }
+    } catch (error) {
+        console.error('Error loading projects for task modal:', error);
+        showToast('error', error.message || 'Failed to load projects');
+    } finally {
+        hideLoading();
+    }
+}
+
+// Function to show add task modal
+function showAddTaskModal() {
+    // Reset form
+    document.getElementById('taskId').value = '';
+    document.getElementById('taskTitle').value = '';
+    document.getElementById('taskDescription').value = '';
+    document.getElementById('taskDueDate').value = '';
+    document.getElementById('taskProject').value = '';
+    document.getElementById('taskStatus').value = 'pending';
+    document.getElementById('taskPriority').value = 'medium';
+    
+    // Reset time tracking
+    document.getElementById('taskTimeTracking').style.display = 'none';
+    document.getElementById('taskStartedAt').textContent = '-';
+    document.getElementById('taskCompletedAt').textContent = '-';
+    document.getElementById('taskActualDuration').textContent = '-';
+    
+    // Load projects for dropdown
+    loadProjectsForTaskModal();
+    
+    // Update modal title
+    document.getElementById('taskModalTitle').textContent = 'Add Task';
+    
+    // Show modal
+    const modal = new bootstrap.Modal(document.getElementById('addTaskModal'));
+    modal.show();
+}
