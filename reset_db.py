@@ -1,5 +1,5 @@
 from app import app, db
-from models import Project, Task, StatusUpdate
+from models import Project, Task, Calendar, StatusUpdate
 from datetime import datetime, timedelta
 import pytz
 
@@ -8,239 +8,129 @@ def reset_database():
         # Drop all tables
         db.drop_all()
         
-        # Create tables
+        # Create all tables
         db.create_all()
         
-        # Create test projects
-        project1 = Project(name="Website Redesign")
-        project2 = Project(name="Mobile App Development")
-        project3 = Project(name="Database Migration")
+        # Create test projects with professional colors
+        projects = [
+            Project(name="Website Redesign", color="#2196F3", description="Modernize company website"),
+            Project(name="Mobile App", color="#4CAF50", description="Develop new mobile application"),
+            Project(name="Database Migration", color="#9C27B0", description="Upgrade database infrastructure")
+        ]
         
-        db.session.add_all([project1, project2, project3])
+        for project in projects:
+            db.session.add(project)
         db.session.commit()
         
-        # Create tasks with realistic data and status history
-        tasks = []
-        
-        # Website Redesign Tasks
-        task1 = Task(
-            title="Design New Homepage Layout",
-            description="Create a modern, responsive homepage design with improved user experience",
-            project_id=project1.id,
-            status="Completed",
-            priority=3,
-            estimated_duration=240,
-            ticket_number="WEB-101",
-            completed_at=datetime.now(pytz.UTC) - timedelta(days=5)
-        )
-        tasks.append(task1)
-        
-        # Status updates for task1
-        status_updates1 = [
-            StatusUpdate(
-                task_id=1,
+        # Create test tasks with various statuses and current status updates
+        tasks = [
+            Task(
+                title="Design Homepage",
+                description="Create new homepage design",
+                status="In Progress",
+                current_status="Working on responsive layout, 60% complete",
+                priority="high",
+                estimated_minutes=240,
+                project=projects[0]
+            ),
+            Task(
+                title="Implement User Authentication",
+                description="Add secure login system",
                 status="Not Started",
-                notes="Task created and assigned",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=10)
+                current_status="Researching OAuth providers",
+                priority="high",
+                estimated_minutes=180,
+                project=projects[0]
             ),
-            StatusUpdate(
-                task_id=1,
-                status="In Progress",
-                notes="Started working on wireframes",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=7)
-            ),
-            StatusUpdate(
-                task_id=1,
-                status="On Hold",
-                notes="Waiting for brand guidelines",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=6)
-            ),
-            StatusUpdate(
-                task_id=1,
-                status="In Progress",
-                notes="Resumed work after receiving guidelines",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=5, hours=12)
-            ),
-            StatusUpdate(
-                task_id=1,
+            Task(
+                title="Setup API Endpoints",
+                description="Create RESTful API endpoints",
                 status="Completed",
-                notes="Design approved by stakeholders",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=5)
-            )
-        ]
-        
-        task2 = Task(
-            title="Implement Homepage Design",
-            description="Convert the approved design into responsive HTML/CSS/JS",
-            project_id=project1.id,
-            status="In Progress",
-            priority=3,
-            estimated_duration=480,
-            ticket_number="WEB-102"
-        )
-        tasks.append(task2)
-        
-        # Status updates for task2
-        status_updates2 = [
-            StatusUpdate(
-                task_id=2,
+                current_status="All endpoints implemented and tested",
+                priority="medium",
+                estimated_minutes=120,
+                project=projects[1]
+            ),
+            Task(
+                title="Database Schema Design",
+                description="Design new database schema",
+                status="In Progress",
+                current_status="Reviewing data relationships, need input on user table",
+                priority="high",
+                estimated_minutes=90,
+                project=projects[2]
+            ),
+            Task(
+                title="Write Migration Scripts",
+                description="Create data migration scripts",
                 status="Not Started",
-                notes="Waiting for design completion",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=5)
-            ),
-            StatusUpdate(
-                task_id=2,
-                status="In Progress",
-                notes="Started HTML implementation",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=2)
+                current_status="Waiting on schema approval",
+                priority="medium",
+                estimated_minutes=150,
+                project=projects[2]
             )
         ]
         
-        task3 = Task(
-            title="SEO Optimization",
-            description="Optimize the new homepage for search engines",
-            project_id=project1.id,
-            status="Not Started",
-            priority=2,
-            estimated_duration=180,
-            ticket_number="WEB-103"
-        )
-        tasks.append(task3)
-        
-        # Mobile App Tasks
-        task4 = Task(
-            title="User Authentication System",
-            description="Implement secure login and registration system",
-            project_id=project2.id,
-            status="In Progress",
-            priority=3,
-            estimated_duration=360,
-            ticket_number="MOB-201"
-        )
-        tasks.append(task4)
-        
-        # Status updates for task4
-        status_updates4 = [
-            StatusUpdate(
-                task_id=4,
-                status="Not Started",
-                notes="Initial planning phase",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=8)
-            ),
-            StatusUpdate(
-                task_id=4,
-                status="In Progress",
-                notes="Started implementing OAuth",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=6)
-            ),
-            StatusUpdate(
-                task_id=4,
-                status="On Hold",
-                notes="Waiting for security review",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=4)
-            ),
-            StatusUpdate(
-                task_id=4,
-                status="In Progress",
-                notes="Implementing security recommendations",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=1)
-            )
-        ]
-        
-        task5 = Task(
-            title="Push Notification System",
-            description="Implement push notifications for mobile app",
-            project_id=project2.id,
-            status="Not Started",
-            priority=2,
-            estimated_duration=240,
-            ticket_number="MOB-202"
-        )
-        tasks.append(task5)
-        
-        # Database Migration Tasks
-        task6 = Task(
-            title="Schema Design",
-            description="Design new database schema with improved performance",
-            project_id=project3.id,
-            status="Completed",
-            priority=3,
-            estimated_duration=180,
-            ticket_number="DB-301",
-            completed_at=datetime.now(pytz.UTC) - timedelta(days=3)
-        )
-        tasks.append(task6)
-        
-        # Status updates for task6
-        status_updates6 = [
-            StatusUpdate(
-                task_id=6,
-                status="Not Started",
-                notes="Initial requirements gathering",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=7)
-            ),
-            StatusUpdate(
-                task_id=6,
-                status="In Progress",
-                notes="Started schema design",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=5)
-            ),
-            StatusUpdate(
-                task_id=6,
-                status="Completed",
-                notes="Schema approved by database team",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=3)
-            )
-        ]
-        
-        task7 = Task(
-            title="Data Migration Scripts",
-            description="Write scripts to migrate data to new schema",
-            project_id=project3.id,
-            status="In Progress",
-            priority=3,
-            estimated_duration=300,
-            ticket_number="DB-302"
-        )
-        tasks.append(task7)
-        
-        # Status updates for task7
-        status_updates7 = [
-            StatusUpdate(
-                task_id=7,
-                status="Not Started",
-                notes="Waiting for schema approval",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=3)
-            ),
-            StatusUpdate(
-                task_id=7,
-                status="In Progress",
-                notes="Writing migration scripts",
-                created_at=datetime.now(pytz.UTC) - timedelta(days=1)
-            )
-        ]
-        
-        task8 = Task(
-            title="Performance Testing",
-            description="Test performance of new database schema",
-            project_id=project3.id,
-            status="Not Started",
-            priority=2,
-            estimated_duration=240,
-            ticket_number="DB-303"
-        )
-        tasks.append(task8)
-        
-        # Add all tasks
-        db.session.add_all(tasks)
+        for task in tasks:
+            db.session.add(task)
         db.session.commit()
         
-        # Add all status updates
-        all_status_updates = (
-            status_updates1 + status_updates2 + status_updates4 +
-            status_updates6 + status_updates7
-        )
-        db.session.add_all(all_status_updates)
+        # Add dependencies
+        tasks[1].dependencies.append(tasks[0])  # Auth depends on Homepage
+        tasks[4].dependencies.append(tasks[3])  # Migration scripts depend on Schema
+        db.session.commit()
+        
+        # Add status updates
+        status_updates = [
+            StatusUpdate(
+                task_id=tasks[0].id,
+                status='In Progress',
+                notes='Started working on color palette'
+            ),
+            StatusUpdate(
+                task_id=tasks[0].id,
+                status='In Progress',
+                notes='Typography system defined'
+            )
+        ]
+        
+        for update in status_updates:
+            db.session.add(update)
+        db.session.commit()
+        
+        # Create test calendar events
+        mst = pytz.timezone('America/Denver')
+        now = datetime.now(mst)
+        start_of_day = now.replace(hour=9, minute=0, second=0, microsecond=0)
+        
+        events = [
+            Calendar(
+                title="Team Meeting",
+                description="Weekly team sync",
+                start_time=start_of_day,
+                end_time=start_of_day + timedelta(hours=1),
+                event_type="meeting"
+            ),
+            Calendar(
+                title="Code Review",
+                description="Review homepage PR",
+                start_time=start_of_day + timedelta(hours=2),
+                end_time=start_of_day + timedelta(hours=3),
+                event_type="review",
+                task_id=tasks[0].id
+            ),
+            Calendar(
+                title="Database Planning",
+                description="Discuss migration strategy",
+                start_time=start_of_day + timedelta(days=1, hours=1),
+                end_time=start_of_day + timedelta(days=1, hours=2),
+                event_type="meeting",
+                task_id=tasks[3].id
+            )
+        ]
+        
+        for event in events:
+            db.session.add(event)
         db.session.commit()
         
         print("Database reset complete with test data!")

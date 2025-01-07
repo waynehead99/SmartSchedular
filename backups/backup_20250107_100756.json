@@ -1,0 +1,48 @@
+{
+  "version": "1.0",
+  "timestamp": "2025-01-07T09:42:11.036923-07:00",
+  "projects": [
+    {
+      "id": 1,
+      "name": "Default Project",
+      "description": "Default project for tasks",
+      "status": "In Progress",
+      "priority": 2,
+      "color": "#6c757d",
+      "created_at": "2025-01-07T16:23:03.054963"
+    }
+  ],
+  "tasks": [],
+  "calendar_events": [
+    {
+      "id": 1,
+      "title": "Team Meeting",
+      "description": "Weekly team sync",
+      "start_time": "2025-01-07T09:00:00",
+      "end_time": "2025-01-07T10:00:00",
+      "project_id": null,
+      "task_id": null,
+      "event_type": "meeting"
+    },
+    {
+      "id": 2,
+      "title": "Code Review",
+      "description": "Review homepage PR",
+      "start_time": "2025-01-07T11:00:00",
+      "end_time": "2025-01-07T12:00:00",
+      "project_id": null,
+      "task_id": null,
+      "event_type": "review"
+    },
+    {
+      "id": 3,
+      "title": "Database Planning",
+      "description": "Discuss migration strategy",
+      "start_time": "2025-01-08T10:00:00",
+      "end_time": "2025-01-08T11:00:00",
+      "project_id": null,
+      "task_id": null,
+      "event_type": "meeting"
+    }
+  ]
+}

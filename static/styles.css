@@ -93,15 +93,41 @@ body {
 }
 
 .task-item {
-    padding: 1rem;
-    margin-bottom: 0.5rem;
-    border-radius: 0.25rem;
-    border-left-width: 4px !important;
-    transition: all 0.2s ease-in-out;
+    border-radius: 4px;
+    margin-bottom: 10px;
+    box-shadow: 0 1px 3px rgba(0,0,0,0.1);
 }
 
-.task-item:hover {
-    background-color: rgba(0, 0, 0, 0.02);
+.task-item .item-header {
+    border-radius: 4px 4px 0 0;
+    transition: background-color 0.2s;
+}
+
+.task-item .item-header:hover {
+    background-color: rgba(0,0,0,0.05);
+}
+
+.task-item .item-content {
+    border-radius: 0 0 4px 4px;
+    padding: 12px;
+    border-top: 1px solid #dee2e6;
+    display: none;
+}
+
+.task-item .item-content.show {
+    display: block;
+    animation: fadeIn 0.3s ease-in;
+}
+
+@keyframes fadeIn {
+    from {
+        opacity: 0;
+        transform: translateY(-10px);
+    }
+    to {
+        opacity: 1;
+        transform: translateY(0);
+    }
 }
 
 .task-actions {
@@ -290,4 +316,110 @@ body {
     padding-left: 1rem;
     margin-left: 0;
     color: #6c757d;
+}
+
+/* AI Suggestions Panel */
+.ai-suggestions-panel {
+    position: fixed;
+    top: 0;
+    right: -300px; /* Start off-screen */
+    bottom: 0;
+    width: 300px;
+    padding: 20px;
+    background-color: #ffffff;
+    border-left: 1px solid #ddd;
+    box-shadow: -2px 0 5px rgba(0,0,0,0.1);
+    transition: right 0.3s ease-in-out;
+    z-index: 1050;
+    overflow-y: auto;
+}
+
+.ai-suggestions-panel.show {
+    right: 0;
+}
+
+.suggestion-item {
+    background-color: #fff;
+    border: 1px solid #e9ecef;
+    border-radius: 0.25rem;
+    margin-bottom: 1rem;
+    padding: 1rem;
+    transition: transform 0.2s ease-in-out;
+}
+
+.suggestion-item:hover {
+    transform: translateY(-2px);
+    box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+}
+
+.suggestion-item h6 {
+    color: #2c3e50;
+    margin-bottom: 0.5rem;
+}
+
+.suggestion-item p {
+    color: #6c757d;
+    font-size: 0.875rem;
+    margin-bottom: 0.5rem;
+}
+
+.suggestion-item i {
+    margin-right: 0.5rem;
+    width: 16px;
+}
+
+/* Calendar Event Styles */
+.fc-event {
+    border-radius: 4px;
+    margin: 2px 0;
+}
+
+.fc-event-main {
+    padding: 4px 6px;
+}
+
+.fc-event-title {
+    font-weight: 500;
+    line-height: 1.3;
+}
+
+.event-duration {
+    font-size: 0.85em;
+    opacity: 0.9;
+    margin-top: 2px;
+}
+
+.event-duration i {
+    margin-right: 4px;
+}
+
+/* Make events more prominent */
+.fc-timegrid-event {
+    min-height: 40px !important;
+    border-radius: 4px !important;
+}
+
+.fc-timegrid-event .fc-event-main {
+    padding: 6px 8px !important;
+}
+
+.fc-timegrid-event.fc-event-start {
+    border-top-left-radius: 4px !important;
+    border-top-right-radius: 4px !important;
+}
+
+.fc-timegrid-event.fc-event-end {
+    border-bottom-left-radius: 4px !important;
+    border-bottom-right-radius: 4px !important;
+}
+
+/* Highlight current time */
+.fc-timegrid-now-indicator-line {
+    border-color: #dc3545 !important;
+    border-width: 2px;
+}
+
+.fc-timegrid-now-indicator-arrow {
+    border-color: #dc3545 !important;
+    border-width: 5px;
 }

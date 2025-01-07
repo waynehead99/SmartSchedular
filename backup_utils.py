@@ -59,14 +59,15 @@ def create_backup():
                     'project_id': task.project_id,
                     'title': task.title,
                     'description': task.description,
-                    'estimated_duration': task.estimated_duration,
-                    'status': task.status,
                     'priority': task.priority,
+                    'status': task.status,
+                    'ticket_number': task.ticket_number,
+                    'estimated_minutes': task.estimated_minutes,
+                    'dependencies': [dep.id for dep in task.dependencies],
                     'created_at': task.created_at.isoformat() if task.created_at else None,
                     'started_at': task.started_at.isoformat() if task.started_at else None,
                     'completed_at': task.completed_at.isoformat() if task.completed_at else None,
-                    'actual_duration': task.actual_duration,
-                    'dependencies': [dep.id for dep in task.dependencies]
+                    'actual_duration': task.actual_duration
                 }
                 backup_data['tasks'].append(task_data)
 
@@ -134,12 +135,13 @@ def restore_backup(backup_filename):
         for task_data in backup_data['tasks']:
             task = Task(
                 id=task_data['id'],
-                project_id=task_data['project_id'],
                 title=task_data['title'],
                 description=task_data['description'],
-                estimated_duration=task_data['estimated_duration'],
+                priority=task_data['priority'],
                 status=task_data['status'],
-                priority=task_data['priority']
+                ticket_number=task_data['ticket_number'],
+                estimated_minutes=task_data['estimated_minutes'],
+                project_id=task_data['project_id']
             )
             if task_data['created_at']:
                 task.created_at = datetime.fromisoformat(task_data['created_at'])

@@ -8,12 +8,157 @@
     <link href="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.css" rel="stylesheet">
     <link href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.0.0/css/all.min.css" rel="stylesheet">
     <link href="styles.css" rel="stylesheet">
+    <style>
+        .ai-suggestions-panel {
+            position: fixed;
+            top: 0;
+            right: 0;
+            bottom: 0;
+            width: 300px;
+            padding: 20px;
+            background-color: #f9f9f9;
+            border-left: 1px solid #ddd;
+            display: none;
+        }
+        
+        .sidebar {
+            height: 100vh;
+            overflow-y: auto;
+            background-color: #f8f9fa;
+            padding: 15px;
+        }
+        
+        .section-header {
+            cursor: pointer;
+            padding: 10px;
+            background-color: #e9ecef;
+            border-radius: 5px;
+            margin-bottom: 10px;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        
+        .section-header:hover {
+            background-color: #dee2e6;
+        }
+        
+        .section-content {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease-out;
+        }
+        
+        .section-content.expanded {
+            max-height: 2000px;
+        }
+        
+        .fas.fa-chevron-right,
+        .fas.fa-chevron-down {
+            transition: transform 0.3s ease;
+        }
+        
+        .section-header:hover .fas {
+            transform: translateX(2px);
+        }
+        
+        .section-content.expanded + .section-header .fas.fa-chevron-right {
+            transform: rotate(90deg);
+        }
+        
+        .project-item, .task-item {
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+            transition: all 0.2s ease;
+        }
+        
+        .project-item:hover, .task-item:hover {
+            transform: translateX(2px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .project-title, .task-title {
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        
+        .badge {
+            font-size: 0.8em;
+            padding: 0.35em 0.65em;
+            font-weight: 500;
+        }
+        
+        .item-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            cursor: pointer;
+        }
+        
+        .item-content {
+            display: none;
+            padding-top: 8px;
+            margin-top: 8px;
+            border-top: 1px solid #dee2e6;
+        }
+        
+        .item-content.show {
+            display: block;
+        }
+        
+        .btn-xs {
+            padding: 0.1rem 0.4rem;
+            font-size: 0.875rem;
+            border-radius: 0.2rem;
+        }
+        
+        .task-item {
+            padding: 8px;
+            margin: 5px 0;
+            border-radius: 4px;
+            border: 1px solid #dee2e6;
+            transition: all 0.2s ease;
+        }
+        
+        .task-item:hover {
+            transform: translateX(2px);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.1);
+        }
+        
+        .task-title {
+            font-weight: 500;
+            margin-right: 8px;
+        }
+        
+        .badge {
+            font-size: 0.8em;
+            padding: 0.35em 0.65em;
+            font-weight: 500;
+        }
+    </style>
 </head>
 <body>
+    <div id="toastContainer" class="toast-container position-fixed bottom-0 end-0 p-3"></div>
     <div class="container-fluid">
         <nav class="navbar navbar-expand-lg navbar-dark bg-dark mb-4">
             <div class="container-fluid">
                 <a class="navbar-brand" href="#">Smart Scheduler</a>
+                <div class="d-flex">
+                    <button class="btn btn-primary me-2" onclick="analyzeTasks()">
+                        <i class="fas fa-brain"></i> Analyze Tasks
+                    </button>
+                    <button class="btn btn-success me-2" onclick="generateSchedule()">
+                        <i class="fas fa-calendar-check"></i> Generate Schedule
+                    </button>
+                    <button class="btn btn-info me-2" onclick="generateStatusReport()">
+                        <i class="fas fa-chart-bar"></i> Status Report
+                    </button>
+                    <button class="btn btn-outline-secondary me-2" data-action="backup">
+                        <i class="fas fa-database"></i> Backups
+                    </button>
+                </div>
             </div>
         </nav>
 
@@ -24,70 +169,85 @@
             </div>
 
             <!-- Projects and Tasks Section -->
-            <div class="col-md-4">
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h4>Projects</h4>
-                    <button class="btn btn-primary btn-sm" onclick="showAddProjectModal()">Add Project</button>
-                </div>
-                <div id="projects-list" class="mb-4"></div>
-
-                <div class="d-flex justify-content-between align-items-center mb-3">
-                    <h4>Tasks</h4>
-                    <div>
-                        <button class="btn btn-outline-primary btn-sm me-2" onclick="getAIAnalysis()">
-                            <i class="fas fa-brain"></i> Analyze Tasks
+            <div class="col-md-4 sidebar">
+                <div class="mb-4">
+                    <div class="section-header" onclick="toggleSection('projects-section')">
+                        <h5 class="mb-0">
+                            <i class="fas fa-chevron-right me-2"></i>
+                            Projects
+                        </h5>
+                        <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); showAddProjectModal()">
+                            <i class="fas fa-plus"></i>
                         </button>
-                        <button class="btn btn-primary btn-sm" onclick="showAddTaskModal()">Add Task</button>
-                        <button class="btn btn-success btn-sm" onclick="generateSchedule()">Schedule Tasks</button>
-                        <button class="btn btn-info btn-sm" id="generateStatusReportBtn">Generate Status Report</button>
+                    </div>
+                    <div id="projects-section" class="section-content">
+                        <div id="projects-list" class="mt-2"></div>
                     </div>
                 </div>
-                <div id="tasks-list"></div>
-            </div>
-        </div>
 
-        <!-- AI Suggestions Section -->
-        <div class="row mt-4">
-            <div class="col-12">
-                <div id="ai-suggestions" style="display: none;">
-                    <div class="card">
-                        <div class="card-header d-flex justify-content-between align-items-center">
-                            <h5 class="mb-0">
-                                <i class="fas fa-lightbulb text-warning"></i> AI Schedule Suggestions
-                            </h5>
-                            <button class="btn btn-link btn-sm" onclick="closeAISuggestions()">
-                                <i class="fas fa-times"></i>
-                            </button>
-                        </div>
-                        <div class="card-body">
-                            <div id="ai-content"></div>
-                        </div>
+                <div class="mb-4">
+                    <div class="section-header" onclick="toggleSection('tasks-section')">
+                        <h5 class="mb-0">
+                            <i class="fas fa-chevron-right me-2"></i>
+                            Tasks
+                        </h5>
+                        <button class="btn btn-sm btn-primary" onclick="event.stopPropagation(); showAddTaskModal()">
+                            <i class="fas fa-plus"></i>
+                        </button>
+                    </div>
+                    <div id="tasks-section" class="section-content">
+                        <div id="tasks-list" class="mt-2"></div>
                     </div>
                 </div>
             </div>
         </div>
 
-        <!-- Backup Management Section -->
-        <div class="row mt-4 mb-4">
-            <div class="col-12">
-                <div class="card">
-                    <div class="card-header d-flex justify-content-between align-items-center">
-                        <h5 class="mb-0">Database Backups</h5>
-                        <button class="btn btn-primary btn-sm" onclick="createBackup()">
-                            <i class="fas fa-save"></i> Create Backup
-                        </button>
-                    </div>
-                    <div class="card-body">
-                        <div id="backups-list" class="list-group">
-                            <!-- Backups will be listed here -->
-                        </div>
-                    </div>
+        <!-- AI Suggestions Section -->
+        <div id="ai-suggestions" class="ai-suggestions-panel" style="display: none;">
+            <div class="card">
+                <div class="card-header d-flex justify-content-between align-items-center">
+                    <h5 class="mb-0">
+                        <i class="fas fa-lightbulb text-warning"></i> AI Schedule Suggestions
+                    </h5>
+                    <button class="btn btn-link btn-sm" onclick="closeAISuggestions()">
+                        <i class="fas fa-times"></i>
+                    </button>
+                </div>
+                <div class="card-body">
+                    <div id="ai-content"></div>
                 </div>
             </div>
         </div>
     </div>
 
     <!-- Modals -->
+    <div class="modal fade" id="backupModal" tabindex="-1">
+        <div class="modal-dialog modal-lg">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title">Backup Management</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="d-flex justify-content-between align-items-center mb-3">
+                        <div>
+                            <input type="file" id="backupFileInput" accept=".json" style="display: none;">
+                            <button class="btn btn-outline-primary me-2" onclick="document.getElementById('backupFileInput').click()">
+                                <i class="fas fa-upload"></i> Upload Backup
+                            </button>
+                        </div>
+                        <button class="btn btn-primary" onclick="createBackup()">
+                            <i class="fas fa-save"></i> Create New Backup
+                        </button>
+                    </div>
+                    <div id="backups-list" class="list-group">
+                        <!-- Backups will be listed here -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <div class="modal fade" id="addEventModal" tabindex="-1">
         <div class="modal-dialog">
             <div class="modal-content">
@@ -116,7 +276,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-danger" id="deleteEventBtn" style="display: none;" onclick="deleteEvent()">Delete</button>
+                    <button type="button" class="btn btn-danger" id="deleteEventBtn" style="display: none;">Delete</button>
                     <button type="button" class="btn btn-primary" onclick="saveEvent()">Save</button>
                 </div>
             </div>
@@ -159,7 +319,7 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-danger" id="deleteProjectBtn" style="display: none;" onclick="deleteProject()">Delete</button>
+                    <button type="button" class="btn btn-danger" id="deleteProjectBtn" style="display: none;">Delete</button>
                     <button type="button" class="btn btn-primary" onclick="saveProject()">Save</button>
                 </div>
             </div>
@@ -245,8 +405,8 @@
                 </div>
                 <div class="modal-footer">
                     <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
-                    <button type="button" class="btn btn-danger" id="deleteTaskBtn" style="display: none;" onclick="deleteTask()">Delete</button>
-                    <button type="button" class="btn btn-primary" onclick="saveTask()">Save</button>
+                    <button type="button" class="btn btn-danger" id="deleteTaskBtn" style="display: none;">Delete</button>
+                    <button type="button" class="btn btn-primary" id="addTaskModalSaveBtn">Save</button>
                 </div>
             </div>
         </div>
@@ -261,36 +421,37 @@
                 </div>
                 <div class="modal-body">
                     <form>
+                        <input type="hidden" id="editTaskId">
                         <div class="mb-3">
                             <label for="editTaskTitle" class="form-label">Title</label>
                             <input type="text" class="form-control" id="editTaskTitle" required>
                         </div>
-                        
                         <div class="mb-3">
                             <label for="editTaskTicketNumber" class="form-label">Ticket Number</label>
                             <input type="text" class="form-control" id="editTaskTicketNumber" placeholder="Enter ticket number">
                         </div>
-                        
                         <div class="mb-3">
                             <label for="editTaskDescription" class="form-label">Description</label>
                             <textarea class="form-control" id="editTaskDescription" rows="3"></textarea>
                         </div>
-                        
-                        <div class="row">
-                            <div class="col-md-6 mb-3">
-                                <label for="editTaskPriority" class="form-label">Priority</label>
-                                <select class="form-select" id="editTaskPriority">
-                                    <option value="1">High</option>
-                                    <option value="2">Medium</option>
-                                    <option value="3">Low</option>
-                                </select>
-                            </div>
-                            <div class="col-md-6 mb-3">
-                                <label for="editTaskDuration" class="form-label">Estimated Duration (minutes)</label>
-                                <input type="number" class="form-control" id="editTaskDuration">
-                            </div>
+                        <div class="mb-3">
+                            <label for="editTaskProject" class="form-label">Project</label>
+                            <select class="form-select" id="editTaskProject" required>
+                                <!-- Projects will be loaded dynamically -->
+                            </select>
                         </div>
-                        
+                        <div class="mb-3">
+                            <label for="editTaskPriority" class="form-label">Priority</label>
+                            <select class="form-select" id="editTaskPriority">
+                                <option value="1">High</option>
+                                <option value="2" selected>Medium</option>
+                                <option value="3">Low</option>
+                            </select>
+                        </div>
+                        <div class="mb-3">
+                            <label for="editTaskDuration" class="form-label">Estimated Duration (minutes)</label>
+                            <input type="number" class="form-control" id="editTaskDuration" min="1" value="60">
+                        </div>
                         <div class="mb-3">
                             <label for="editTaskStatus" class="form-label">Status</label>
                             <select class="form-select" id="editTaskStatus">
@@ -300,31 +461,40 @@
                                 <option value="Completed">Completed</option>
                             </select>
                         </div>
-                        
                         <div class="mb-3">
-                            <label for="statusNotes" class="form-label">Status Update Notes</label>
-                            <textarea class="form-control" id="statusNotes" rows="2" placeholder="Add notes about this status change (optional)"></textarea>
+                            <label for="editTaskDependencies" class="form-label">Dependencies</label>
+                            <select class="form-select" id="editTaskDependencies" multiple>
+                                <!-- Tasks will be loaded dynamically -->
+                            </select>
+                            <small class="form-text text-muted">Select tasks that must be completed before this one</small>
                         </div>
-                        
-                        <div class="mb-3">
-                            <h6>Status History</h6>
-                            <div id="statusHistory" class="status-history-container">
-                                <p class="text-muted">Loading status history...</p>
+                        <div id="editTaskTimeTracking" class="mb-3">
+                            <h6>Time Tracking</h6>
+                            <div class="row">
+                                <div class="col">
+                                    <small>Started: <span id="editTaskStartedAt">-</span></small>
+                                </div>
+                                <div class="col">
+                                    <small>Completed: <span id="editTaskCompletedAt">-</span></small>
+                                </div>
+                            </div>
+                            <div class="row mt-2">
+                                <div class="col">
+                                    <small>Actual Duration: <span id="editTaskActualDuration">-</span></small>
+                                </div>
                             </div>
                         </div>
                     </form>
                 </div>
                 <div class="modal-footer">
-                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Close</button>
-                    <button type="button" class="btn btn-danger me-auto" onclick="deleteTask()">Delete Task</button>
-                    <button type="button" class="btn btn-primary" onclick="updateTaskStatus()">Update Status</button>
-                    <button type="button" class="btn btn-success" onclick="saveTask()">Save Changes</button>
+                    <button type="button" class="btn btn-secondary" data-bs-dismiss="modal">Cancel</button>
+                    <button type="button" class="btn btn-danger" id="editTaskDeleteBtn" onclick="deleteTask()">Delete</button>
+                    <button type="button" class="btn btn-primary" onclick="saveTask()">Save</button>
                 </div>
             </div>
         </div>
     </div>
 
-    <!-- Status Report Modal -->
     <div class="modal fade" id="statusReportModal" tabindex="-1">
         <div class="modal-dialog modal-lg">
             <div class="modal-content">
@@ -363,9 +533,39 @@
         </div>
     </div>
 
+    <div class="modal fade" id="backupModal" tabindex="-1" aria-labelledby="backupModalLabel" aria-hidden="true">
+        <div class="modal-dialog">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h5 class="modal-title" id="backupModalLabel">Backup Management</h5>
+                    <button type="button" class="btn-close" data-bs-dismiss="modal" aria-label="Close"></button>
+                </div>
+                <div class="modal-body">
+                    <div class="mb-3">
+                        <button id="createBackupButton" class="btn btn-primary">
+                            <i class="fas fa-download"></i> Create New Backup
+                        </button>
+                    </div>
+                    <div class="mb-3">
+                        <h6>Available Backups</h6>
+                        <div id="backupsList" class="list-group">
+                            <!-- Backups will be listed here -->
+                        </div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
     <!-- Scripts -->
     <script src="https://cdn.jsdelivr.net/npm/bootstrap@5.1.3/dist/js/bootstrap.bundle.min.js"></script>
     <script src="https://cdn.jsdelivr.net/npm/fullcalendar@5.11.3/main.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment.js/2.29.1/moment.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/moment-timezone/0.5.33/moment-timezone-with-data.min.js"></script>
+    <script>
+        // Set default timezone to local
+        moment.tz.setDefault(moment.tz.guess());
+    </script>
     <script src="https://cdn.jsdelivr.net/npm/marked/marked.min.js"></script>
     <script src="app.js"></script>
 

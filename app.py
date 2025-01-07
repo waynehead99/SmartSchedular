@@ -22,32 +22,47 @@ Environment Variables Required:
 import os
 import json
 from datetime import datetime, timedelta
-from flask import Flask, request, jsonify, send_from_directory
+from flask import Flask, request, jsonify, send_from_directory, url_for
 from flask_cors import CORS, cross_origin
 from flask_sqlalchemy import SQLAlchemy
+from flask_migrate import Migrate
 from models import db, Project, Task, Calendar, StatusUpdate
 import openai
-from backup_utils import create_backup, restore_backup, list_backups
 from dotenv import load_dotenv
 import pytz
+import logging
+from openai import OpenAI
+from collections import defaultdict
+from dateutil import tz
 
 # Load environment variables
 load_dotenv()
 
 # Initialize Flask application
-app = Flask(__name__, static_folder='static')
-CORS(app)
+app = Flask(__name__, static_url_path='', static_folder='static')
 
 # Configure database
 app.config['SQLALCHEMY_DATABASE_URI'] = os.getenv('DATABASE_URL', 'sqlite:///smart_scheduler.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'your-secret-key-here')
 
-# Initialize database
+# Initialize extensions
 db.init_app(app)
+migrate = Migrate(app, db)
+
+# Enable CORS
+CORS(app, resources={
+    r"/api/*": {
+        "origins": "*",
+        "methods": ["GET", "POST", "PUT", "DELETE"],
+        "allow_headers": ["Content-Type"]
+    }
+})
+
+# Configure logging
+logging.basicConfig(level=logging.DEBUG)
 
 # Initialize OpenAI client
-from openai import OpenAI
 client = OpenAI(api_key=os.getenv('OPENAI_API_KEY'))
 
 if not os.getenv('OPENAI_API_KEY'):
@@ -55,211 +70,99 @@ if not os.getenv('OPENAI_API_KEY'):
 
 def is_working_hours(dt):
     """Check if a datetime is within working hours (7 AM to 4 PM MST) on weekdays"""
-    # Convert to MST
-    mst_dt = dt.astimezone(pytz.timezone('America/Denver'))
-    # Check if it's a weekend
-    if mst_dt.weekday() >= 5:  # 5 is Saturday, 6 is Sunday
+    # Convert to MST if not already
+    mst = pytz.timezone('America/Denver')
+    if dt.tzinfo is None:
+        dt = mst.localize(dt)
+    elif dt.tzinfo != mst:
+        dt = dt.astimezone(mst)
+    
+    # Check if it's a weekday (Monday = 0, Sunday = 6)
+    if dt.weekday() >= 5:  # Saturday or Sunday
         return False
+    
     # Check if it's between 7 AM and 4 PM MST
-    return 7 <= mst_dt.hour < 16
+    return 7 <= dt.hour < 16
 
 def generate_schedule_suggestions(tasks, calendar_events):
-    """Generate AI-powered schedule suggestions based on tasks and existing calendar"""
-    try:
-        # Sort calendar events by start time
-        calendar_events = sorted(calendar_events, key=lambda x: x.start_time)
+    app.logger.debug(f'Generating suggestions for {len(tasks)} tasks')
+    
+    # Convert all times to MST for consistent scheduling
+    mst = pytz.timezone('America/Denver')
+    current_time = datetime.now(pytz.UTC)
+    current_mst = current_time.astimezone(mst)
+    
+    # Initialize next available slot time
+    slot_time = current_mst
+    
+    # If current time is after work hours, start tomorrow
+    if slot_time.hour >= 17:  # After 5 PM
+        slot_time = (slot_time + timedelta(days=1)).replace(hour=7, minute=0)
+    elif slot_time.hour < 7:  # Before 7 AM
+        slot_time = slot_time.replace(hour=7, minute=0)
+    
+    # Convert calendar events to MST and sort by start time
+    existing_events = []
+    for event in calendar_events:
+        start = event.start_time.astimezone(mst) if event.start_time.tzinfo else mst.localize(event.start_time)
+        end = event.end_time.astimezone(mst) if event.end_time.tzinfo else mst.localize(event.end_time)
+        existing_events.append({'start': start, 'end': end})
+    existing_events.sort(key=lambda x: x['start'])
+    
+    suggestions = []
+    
+    for task in tasks:
+        app.logger.debug(f'Considering task: {task.title} (ID: {task.id})')
         
-        # Find available time slots
-        available_slots = []
-        current_time = datetime.now(pytz.UTC)  # Make current time timezone-aware
+        # Skip completed tasks
+        if task.status == 'Completed':
+            app.logger.debug(f'Skipping completed task: {task.title}')
+            continue
         
-        if calendar_events:
-            # Convert event times to UTC for comparison
-            calendar_events = [
-                {
-                    'start_time': event.start_time.replace(tzinfo=pytz.UTC) if event.start_time.tzinfo is None else event.start_time.astimezone(pytz.UTC),
-                    'end_time': event.end_time.replace(tzinfo=pytz.UTC) if event.end_time.tzinfo is None else event.end_time.astimezone(pytz.UTC),
-                    'title': event.title
-                }
-                for event in calendar_events
-            ]
+        # Get task duration (default to 30 minutes if not specified)
+        duration = task.estimated_minutes or 30
+        
+        # Find next available slot that doesn't overlap with existing events
+        while True:
+            # Check if slot_time is during working hours (7 AM - 5 PM MST)
+            if slot_time.hour < 7:
+                slot_time = slot_time.replace(hour=7, minute=0)
+            elif slot_time.hour >= 17:
+                slot_time = (slot_time + timedelta(days=1)).replace(hour=7, minute=0)
+                # Skip weekends
+                while slot_time.weekday() >= 5:
+                    slot_time += timedelta(days=1)
             
-            # Check for slot before first event
-            if current_time < calendar_events[0]['start_time']:
-                duration = int((calendar_events[0]['start_time'] - current_time).total_seconds() / 60)
-                if duration >= 15 and not is_working_hours(current_time):  # Only include slots of 15 minutes or more
-                    available_slots.append({
-                        'start': current_time,
-                        'end': calendar_events[0]['start_time'],
-                        'duration': duration
-                    })
+            slot_end = slot_time + timedelta(minutes=duration)
             
-            # Check for slots between events
-            for i in range(len(calendar_events) - 1):
-                slot_start = calendar_events[i]['end_time']
-                slot_end = calendar_events[i + 1]['start_time']
-                if slot_start < slot_end and not is_working_hours(slot_start):
-                    duration = int((slot_end - slot_start).total_seconds() / 60)
-                    if duration >= 15:  # Only include slots of 15 minutes or more
-                        available_slots.append({
-                            'start': slot_start,
-                            'end': slot_end,
-                            'duration': duration
-                        })
+            # Check for overlaps with existing events
+            has_overlap = False
+            for event in existing_events:
+                if slot_time < event['end'] and slot_end > event['start']:
+                    has_overlap = True
+                    # Move slot_time to after this event
+                    slot_time = event['end']
+                    break
             
-            # Check for slot after last event
-            last_event = calendar_events[-1]
-            if last_event['end_time'] > current_time and not is_working_hours(last_event['end_time']):
-                available_slots.append({
-                    'start': last_event['end_time'],
-                    'end': last_event['end_time'] + timedelta(hours=8),  # Consider next 8 hours
-                    'duration': 480  # 8 hours in minutes
-                })
-        else:
-            # If no events, consider next 8 hours if not during working hours
-            if not is_working_hours(current_time):
-                available_slots.append({
-                    'start': current_time,
-                    'end': current_time + timedelta(hours=8),
-                    'duration': 480
-                })
-
-        # Filter slots that are too short for the tasks
-        min_duration_needed = min(task.estimated_duration or 30 for task in tasks)  # Default to 30 minutes if not specified
-        available_slots = [slot for slot in available_slots if slot['duration'] >= min_duration_needed]
-
-        # Further filter slots to ensure they don't overlap with working hours
-        filtered_slots = []
-        for slot in available_slots:
-            start_time = slot['start']
-            end_time = slot['end']
-            current = start_time
+            # Also check for overlaps with previously suggested times
+            for _, prev_time in suggestions:
+                prev_end = prev_time + timedelta(minutes=30)  # Assume 30 min for previous suggestions
+                if slot_time < prev_end and slot_end > prev_time:
+                    has_overlap = True
+                    # Move slot_time to after this suggestion
+                    slot_time = prev_end
+                    break
             
-            while current < end_time:
-                if not is_working_hours(current):
-                    # Find the next time that would be during working hours
-                    next_work_time = current + timedelta(hours=1)
-                    while next_work_time < end_time and not is_working_hours(next_work_time):
-                        next_work_time += timedelta(hours=1)
-                    
-                    duration = int((min(next_work_time, end_time) - current).total_seconds() / 60)
-                    if duration >= min_duration_needed:
-                        filtered_slots.append({
-                            'start': current,
-                            'end': min(next_work_time, end_time),
-                            'duration': duration
-                        })
-                
-                current += timedelta(hours=1)
+            if not has_overlap:
+                break
         
-        available_slots = filtered_slots
-
-        if not available_slots:
-            return []  # No suitable slots found
-
-        # Format tasks and slots for the prompt
-        tasks_text = "\n".join([
-            f"Task: {task.title} (Priority: {task.priority_label}, Duration: {task.estimated_duration or 30}min)"
-            for task in tasks if task.status != 'Completed'
-        ])
+        app.logger.debug(f'Suggesting slot for task {task.title} at {slot_time}')
+        suggestions.append((task, slot_time))
         
-        slots_text = "\n".join([
-            f"Available Slot: {slot['start'].strftime('%Y-%m-%d %H:%M')} to {slot['end'].strftime('%Y-%m-%d %H:%M')} ({slot['duration']} minutes)"
-            for slot in available_slots
-        ])
-        
-        events_text = "\n".join([
-            f"Busy: {event['title']} ({event['start_time'].strftime('%Y-%m-%d %H:%M')} - {event['end_time'].strftime('%Y-%m-%d %H:%M')})"
-            for event in calendar_events
-        ])
-        
-        system_prompt = """You are an AI scheduling assistant that helps optimize task scheduling around existing calendar events.
-Your goal is to create an efficient schedule by fitting tasks into available time slots while considering task priorities, durations, and dependencies.
-For each suggestion, you must specify an exact start time that falls within an available slot and ensure there is enough time for the task.
-IMPORTANT: Only suggest times outside of working hours (before 7 AM or after 4 PM MST) on weekdays, or any time on weekends."""
-
-        user_prompt = f"""Given these unfinished tasks and available time slots, suggest an optimal schedule that:
-1. Fits tasks into available time slots (never during busy periods)
-2. Ensures each slot has enough duration for the task
-3. Prioritizes high-priority tasks
-4. Groups related tasks in adjacent slots when possible
-5. Only schedules outside working hours (before 7 AM or after 4 PM MST) on weekdays, or any time on weekends
-
-Tasks to schedule:
-{tasks_text}
-
-Available time slots (already filtered for non-working hours):
-{slots_text}
-
-Busy periods:
-{events_text}
-
-For each task, provide:
-1. Task name
-2. Exact start time (YYYY-MM-DD HH:MM format)
-3. Brief reason for the slot choice
-
-Format each suggestion exactly like this:
-SUGGESTION
-Task: [Task Name]
-Time: [YYYY-MM-DD HH:MM]
-Reason: [Your reasoning]
-END"""
-
-        response = client.chat.completions.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": system_prompt},
-                {"role": "user", "content": user_prompt}
-            ],
-            temperature=0.7,
-            max_tokens=1000
-        )
-        
-        # Parse the suggestions into a structured format
-        suggestions = []
-        content = response.choices[0].message.content
-        suggestion_blocks = content.split('SUGGESTION\n')[1:]  # Skip the first empty split
-        
-        for block in suggestion_blocks:
-            if not block.strip():
-                continue
-            
-            lines = block.strip().split('\n')
-            if len(lines) >= 3 and lines[-1] == 'END':
-                task_line = lines[0].replace('Task: ', '')
-                time_line = lines[1].replace('Time: ', '')
-                reason_line = lines[2].replace('Reason: ', '')
-                
-                # Validate the suggested time falls within an available slot
-                try:
-                    suggested_time = datetime.strptime(time_line, '%Y-%m-%d %H:%M')
-                    suggested_time = pytz.timezone('America/Denver').localize(suggested_time)
-                    suggested_time_utc = suggested_time.astimezone(pytz.UTC)
-                    
-                    # Double-check that the suggested time is outside working hours
-                    if not is_working_hours(suggested_time):
-                        task = next((t for t in tasks if t.title == task_line), None)
-                        if task:
-                            duration = task.estimated_duration or 30
-                            # Check if the suggestion fits in any available slot
-                            for slot in available_slots:
-                                if (slot['start'] <= suggested_time_utc and 
-                                    suggested_time_utc + timedelta(minutes=duration) <= slot['end']):
-                                    suggestions.append({
-                                        'task': task_line,
-                                        'suggested_time': time_line,
-                                        'reason': reason_line,
-                                        'duration': duration
-                                    })
-                                    break
-                except (ValueError, TypeError):
-                    continue  # Skip invalid time formats
-        
-        return suggestions
-    except Exception as e:
-        app.logger.error(f"Error generating schedule suggestions: {str(e)}")
-        return []
+        # Move slot_time to after this task for the next iteration
+        slot_time = slot_end
+    
+    return suggestions
 
 def generate_scheduling_reason(task, dependencies, suggested_time):
     """Generate a human-readable reason for the scheduling suggestion"""
@@ -281,8 +184,8 @@ def generate_scheduling_reason(task, dependencies, suggested_time):
         reasons.append("Medium priority task")
     
     # Consider estimated duration
-    if task.estimated_duration:
-        hours = task.estimated_duration / 60
+    if task.estimated_minutes:
+        hours = task.estimated_minutes / 60
         reasons.append(f"Task requires approximately {hours:.1f} hours")
     
     # Consider current status
@@ -301,6 +204,9 @@ def generate_scheduling_reason(task, dependencies, suggested_time):
 def analyze_task_dependencies(task_data):
     """Analyze task dependencies and generate insights using AI."""
     try:
+        if not os.getenv('OPENAI_API_KEY'):
+            return "OpenAI API key not found. Please set the OPENAI_API_KEY environment variable."
+
         prompt = f"""Analyze these tasks and their dependencies:
 {json.dumps(task_data, indent=2)}
 
@@ -325,15 +231,25 @@ Keep the analysis practical and actionable."""
         return response.choices[0].message.content
     except Exception as e:
         app.logger.error(f"Error in AI analysis: {str(e)}")
-        return "Error generating analysis. Please try again later."
+        return f"Error generating analysis: {str(e)}. Please ensure OPENAI_API_KEY is set correctly."
 
 @app.route('/')
-def home():
-    return send_from_directory('static', 'index.html')
+def index():
+    app.logger.info('Serving index.html')
+    try:
+        return app.send_static_file('index.html')
+    except Exception as e:
+        app.logger.error(f'Error serving index.html: {str(e)}')
+        return str(e), 500
 
-@app.route('/<path:path>')
+@app.route('/static/<path:path>')
 def serve_static(path):
-    return send_from_directory('static', path)
+    app.logger.info(f'Serving static file: {path}')
+    try:
+        return send_from_directory('static', path)
+    except Exception as e:
+        app.logger.error(f'Error serving static file {path}: {str(e)}')
+        return str(e), 404
 
 @app.route('/api/calendar', methods=['GET'])
 def get_calendar_events():
@@ -341,11 +257,12 @@ def get_calendar_events():
     return jsonify([{
         'id': event.id,
         'title': event.title,
-        'start': event.start_time.strftime('%Y-%m-%dT%H:%M:%S'),
-        'end': event.end_time.strftime('%Y-%m-%dT%H:%M:%S'),
+        'start': event.start_time.astimezone(pytz.timezone('America/Denver')).isoformat(),
+        'end': event.end_time.astimezone(pytz.timezone('America/Denver')).isoformat(),
         'description': event.description,
         'project_id': event.project_id,
         'project_name': event.project.name if event.project_id else None,
+        'task_id': event.task_id,
         'event_type': event.event_type,
         'backgroundColor': getattr(event.project, 'color', None) if event.project_id else None,
         'borderColor': getattr(event.project, 'color', None) if event.project_id else None
@@ -355,17 +272,45 @@ def get_calendar_events():
 def add_calendar_event():
     try:
         data = request.json
+        app.logger.debug(f"Received event data: {data}")
+        
+        try:
+            # Parse times and ensure they're in MST
+            mst = pytz.timezone('America/Denver')
+            start_time = datetime.fromisoformat(data['start_time'].replace('Z', '+00:00'))
+            end_time = datetime.fromisoformat(data['end_time'].replace('Z', '+00:00'))
+            
+            # Convert to MST if not already
+            if start_time.tzinfo is None:
+                start_time = mst.localize(start_time)
+            else:
+                start_time = start_time.astimezone(mst)
+                
+            if end_time.tzinfo is None:
+                end_time = mst.localize(end_time)
+            else:
+                end_time = end_time.astimezone(mst)
+                
+            app.logger.debug(f"Parsed MST start_time: {start_time}, end_time: {end_time}")
+            
+        except ValueError as e:
+            app.logger.error(f"Date parsing error: {str(e)}")
+            return jsonify({'error': f'Invalid date format: {str(e)}'}), 400
+        
         event = Calendar(
             title=data['title'],
             description=data.get('description'),
-            start_time=datetime.fromisoformat(data['start_time']),
-            end_time=datetime.fromisoformat(data['end_time']),
+            start_time=start_time,
+            end_time=end_time,
             project_id=data.get('project_id'),
+            task_id=data.get('task_id'),
             event_type=data.get('event_type', 'event')
         )
         db.session.add(event)
         db.session.commit()
         
+        app.logger.debug(f"Stored event with MST start_time: {event.start_time}, end_time: {event.end_time}")
+        
         return jsonify({
             'id': event.id,
             'title': event.title,
@@ -374,31 +319,52 @@ def add_calendar_event():
             'description': event.description,
             'project_id': event.project_id,
             'project_name': event.project.name if event.project_id else None,
-            'event_type': event.event_type
+            'task_id': event.task_id,
+            'event_type': event.event_type,
+            'backgroundColor': getattr(event.project, 'color', None) if event.project_id else None,
+            'borderColor': getattr(event.project, 'color', None) if event.project_id else None
         })
     except Exception as e:
         app.logger.error(f"Error adding calendar event: {str(e)}")
-        return jsonify({'error': 'Failed to add event'}), 500
+        return jsonify({'error': f'Failed to add event: {str(e)}'}), 500
 
 @app.route('/api/calendar/<int:event_id>', methods=['PUT', 'DELETE'])
 def handle_calendar_event(event_id):
+    event = Calendar.query.get_or_404(event_id)
+    
+    if request.method == 'DELETE':
+        db.session.delete(event)
+        db.session.commit()
+        return '', 204
+    
     try:
-        event = db.session.get(Calendar, event_id)
-        if not event:
-            return jsonify({'error': 'Event not found'}), 404
-        
-        if request.method == 'DELETE':
-            db.session.delete(event)
-            db.session.commit()
-            return jsonify({'message': 'Event deleted successfully'})
-        
         data = request.json
+        
+        # Parse and convert times to MST
+        mst = pytz.timezone('America/Denver')
+        start_time = datetime.fromisoformat(data['start_time'].replace('Z', '+00:00'))
+        end_time = datetime.fromisoformat(data['end_time'].replace('Z', '+00:00'))
+        
+        if start_time.tzinfo is None:
+            start_time = mst.localize(start_time)
+        else:
+            start_time = start_time.astimezone(mst)
+            
+        if end_time.tzinfo is None:
+            end_time = mst.localize(end_time)
+        else:
+            end_time = end_time.astimezone(mst)
+        
         event.title = data['title']
-        event.start_time = datetime.fromisoformat(data['start_time'])
-        event.end_time = datetime.fromisoformat(data['end_time'])
-        event.description = data.get('description', '')
+        event.description = data.get('description')
+        event.start_time = start_time
+        event.end_time = end_time
+        event.project_id = data.get('project_id')
+        event.task_id = data.get('task_id')
+        event.event_type = data.get('event_type', event.event_type)
         
         db.session.commit()
+        
         return jsonify({
             'id': event.id,
             'title': event.title,
@@ -407,11 +373,17 @@ def handle_calendar_event(event_id):
             'description': event.description,
             'project_id': event.project_id,
             'project_name': event.project.name if event.project_id else None,
-            'event_type': event.event_type
+            'task_id': event.task_id,
+            'event_type': event.event_type,
+            'backgroundColor': getattr(event.project, 'color', None) if event.project_id else None,
+            'borderColor': getattr(event.project, 'color', None) if event.project_id else None
         })
+    except ValueError as e:
+        app.logger.error(f"Date parsing error: {str(e)}")
+        return jsonify({'error': f'Invalid date format: {str(e)}'}), 400
     except Exception as e:
-        app.logger.error(f"Error handling calendar event: {str(e)}")
-        return jsonify({'error': 'Failed to handle event'}), 500
+        app.logger.error(f"Error updating calendar event: {str(e)}")
+        return jsonify({'error': f'Failed to update event: {str(e)}'}), 500
 
 @app.route('/api/projects', methods=['GET', 'POST'])
 def handle_projects():
@@ -447,9 +419,22 @@ def handle_projects():
         'color': project.color
     } for project in projects])
 
-@app.route('/api/projects/<int:project_id>', methods=['PUT', 'DELETE'])
+@app.route('/api/projects/<int:project_id>', methods=['GET', 'PUT', 'DELETE'])
 def handle_project(project_id):
     project = db.session.get(Project, project_id)
+    
+    if not project:
+        return jsonify({'error': 'Project not found'}), 404
+    
+    if request.method == 'GET':
+        return jsonify({
+            'id': project.id,
+            'name': project.name,
+            'description': project.description,
+            'status': project.status,
+            'priority': project.priority,
+            'color': project.color
+        })
     
     if request.method == 'DELETE':
         # Delete associated tasks first
@@ -458,118 +443,151 @@ def handle_project(project_id):
         db.session.commit()
         return jsonify({'message': 'Project and associated tasks deleted successfully'})
     
-    data = request.json
-    project.name = data.get('name', project.name)
-    project.description = data.get('description', project.description)
-    project.status = data.get('status', project.status)
-    project.priority = data.get('priority', project.priority)
-    project.color = data.get('color', project.color)
-    db.session.commit()
-    return jsonify({'message': 'Project updated successfully'})
+    try:
+        data = request.json
+        if not data:
+            return jsonify({'error': 'No data provided'}), 400
+            
+        project.name = data.get('name', project.name)
+        project.description = data.get('description', project.description)
+        project.status = data.get('status', project.status)
+        project.priority = data.get('priority', project.priority)
+        project.color = data.get('color', project.color)
+        db.session.commit()
+        return jsonify({'message': 'Project updated successfully'})
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error updating project: {str(e)}")
+        return jsonify({'error': 'Failed to update project'}), 500
 
 @app.route('/api/tasks', methods=['GET', 'POST'])
 def handle_tasks():
-    if request.method == 'POST':
-        data = request.json
-        
-        # Validate required fields
-        if not data.get('title'):
-            return jsonify({'message': 'Title is required'}), 400
-        if not data.get('project_id'):
-            return jsonify({'message': 'Project is required'}), 400
+    try:
+        if request.method == 'POST':
+            data = request.json
+            app.logger.info(f'Creating new task with data: {data}')
             
-        # Validate project exists
-        project = Project.query.get(data['project_id'])
-        if not project:
-            return jsonify({'message': 'Selected project does not exist'}), 400
+            # Validate required fields
+            if not data.get('title'):
+                return jsonify({'error': 'Title is required'}), 400
+            if not data.get('project_id'):
+                return jsonify({'error': 'Project is required'}), 400
+                
+            # Validate project exists
+            project = db.session.get(Project, data['project_id'])
+            if not project:
+                return jsonify({'error': 'Selected project does not exist'}), 400
+            
+            new_task = Task(
+                title=data['title'],
+                description=data.get('description', ''),
+                status=data.get('status', 'Not Started'),
+                priority=data.get('priority', 2),
+                estimated_minutes=data.get('estimated_minutes'),
+                project_id=data['project_id'],
+                ticket_number=data.get('ticket_number')
+            )
+            
+            # Handle dependencies
+            if 'dependencies' in data:
+                for dep_id in data['dependencies']:
+                    dep_task = db.session.get(Task, dep_id)
+                    if dep_task:
+                        new_task.dependencies.append(dep_task)
+            
+            try:
+                db.session.add(new_task)
+                db.session.commit()
+                app.logger.info(f'Task created successfully with ID: {new_task.id}')
+                return jsonify({'message': 'Task created successfully', 'id': new_task.id}), 201
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f"Database error while creating task: {str(e)}")
+                return jsonify({'error': 'Database error occurred while creating task'}), 500
         
-        new_task = Task(
-            title=data['title'],
-            description=data.get('description', ''),
-            status=data.get('status', 'Not Started'),
-            priority=data.get('priority', 2),
-            estimated_duration=data.get('estimated_duration'),
-            project_id=data['project_id']
-        )
+        # GET request
+        try:
+            app.logger.info('Fetching all tasks')
+            tasks = Task.query.all()
+            app.logger.info(f'Found {len(tasks)} tasks')
+            
+            # Convert tasks to dictionary and log the first task for debugging
+            tasks_dict = [task.to_dict() for task in tasks]
+            if tasks_dict:
+                app.logger.debug(f'First task data: {tasks_dict[0]}')
+            
+            return jsonify({'tasks': tasks_dict})
+        except Exception as e:
+            app.logger.error(f"Error fetching tasks: {str(e)}")
+            return jsonify({'error': f'Failed to fetch tasks: {str(e)}'}), 500
+
+    except Exception as e:
+        app.logger.error(f"Error in handle_tasks: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/tasks/<int:task_id>', methods=['GET', 'PUT', 'DELETE'])
+def handle_task(task_id):
+    try:
+        task = db.session.get(Task, task_id)
+        if task is None:
+            return jsonify({'error': 'Task not found'}), 404
+
+        if request.method == 'GET':
+            return jsonify(task.to_dict())
         
-        # Handle dependencies
-        if 'dependencies' in data:
-            for dep_id in data['dependencies']:
-                dep_task = Task.query.get(dep_id)
-                if dep_task:
-                    new_task.dependencies.append(dep_task)
+        elif request.method == 'DELETE':
+            db.session.delete(task)
+            db.session.commit()
+            return jsonify({'message': 'Task deleted successfully'})
         
-        db.session.add(new_task)
-        db.session.commit()
-        return jsonify({'message': 'Task created successfully', 'id': new_task.id}), 201
-    
-    tasks = Task.query.all()
-    return jsonify([{
-        'id': task.id,
-        'title': task.title,
-        'description': task.description,
-        'status': task.status,
-        'priority': task.priority,
-        'priority_label': task.priority_label,
-        'estimated_duration': task.estimated_duration,
-        'project_id': task.project_id,
-        'project_name': task.project.name if task.project else None,
-        'created_at': task.created_at.isoformat(),
-        'started_at': task.started_at.isoformat() if task.started_at else None,
-        'completed_at': task.completed_at.isoformat() if task.completed_at else None,
-        'actual_duration': task.actual_duration,
-        'progress': task.progress,
-        'dependencies': [dep.id for dep in task.dependencies],
-        'dependent_tasks': [dep.id for dep in task.dependent_tasks]
-    } for task in tasks])
+        elif request.method == 'PUT':
+            data = request.get_json()
+            
+            # Validate required fields
+            if not data.get('title'):
+                return jsonify({'error': 'Title is required'}), 400
+            
+            # Validate project_id if provided
+            if 'project_id' in data:
+                project = db.session.get(Project, data['project_id'])
+                if not project:
+                    return jsonify({'error': 'Selected project does not exist'}), 400
+            
+            # Update task fields
+            fields = ['title', 'description', 'status', 'priority', 'project_id', 'estimated_minutes', 'ticket_number', 'current_status']
+            for field in fields:
+                if field in data:
+                    setattr(task, field, data[field])
+            
+            # Update dependencies if provided
+            if 'dependencies' in data:
+                task.dependencies = []  # Clear existing dependencies
+                for dep_id in data['dependencies']:
+                    dep_task = db.session.get(Task, dep_id)
+                    if dep_task:
+                        task.dependencies.append(dep_task)
+            
+            # Update timestamps based on status changes
+            if 'status' in data:
+                if data['status'] == 'In Progress' and not task.started_at:
+                    task.started_at = datetime.utcnow()
+                elif data['status'] == 'Completed' and not task.completed_at:
+                    task.completed_at = datetime.utcnow()
+                    if task.started_at:
+                        task.actual_duration = (task.completed_at - task.started_at).total_seconds() / 60
+            
+            try:
+                db.session.commit()
+                return jsonify(task.to_dict())
+            except Exception as e:
+                db.session.rollback()
+                app.logger.error(f"Database error while updating task: {str(e)}")
+                return jsonify({'error': 'Database error occurred while updating task'}), 500
 
-@app.route('/api/tasks/<int:task_id>', methods=['GET'])
-def get_task(task_id):
-    task = db.session.get(Task, task_id)
-    if task is None:
-        return jsonify({'error': 'Task not found'}), 404
-    return jsonify(task.to_dict())
-
-@app.route('/api/tasks/<int:task_id>', methods=['DELETE'])
-def delete_task(task_id):
-    task = db.session.get(Task, task_id)
-    if task is None:
-        return jsonify({'error': 'Task not found'}), 404
-    db.session.delete(task)
-    db.session.commit()
-    return jsonify({'message': 'Task deleted successfully'})
-
-@app.route('/api/tasks/<int:task_id>', methods=['PUT'])
-def update_task(task_id):
-    task = db.session.get(Task, task_id)
-    if task is None:
-        return jsonify({'error': 'Task not found'}), 404
-    
-    data = request.get_json()
-    
-    # Update task fields
-    for field in ['title', 'description', 'status', 'priority', 'project_id', 'estimated_duration', 'ticket_number']:
-        if field in data:
-            setattr(task, field, data[field])
-    
-    # Handle completion status
-    if data.get('status') == 'Completed' and not task.completed_at:
-        task.completed_at = datetime.now(pytz.UTC)
-    elif data.get('status') != 'Completed':
-        task.completed_at = None
-    
-    # Update dependencies
-    if 'dependencies' in data:
-        # Clear existing dependencies
-        task.dependencies = []
-        # Add new dependencies
-        for dep_id in data['dependencies']:
-            dependency = db.session.get(Task, dep_id)
-            if dependency:
-                task.dependencies.append(dependency)
-    
-    db.session.commit()
-    return jsonify(task.to_dict())
+    except Exception as e:
+        db.session.rollback()
+        app.logger.error(f"Error handling task: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/tasks/<int:task_id>/status', methods=['POST'])
 def update_task_status(task_id):
@@ -616,58 +634,55 @@ def get_task_status_history(task_id):
     status_updates = StatusUpdate.query.filter_by(task_id=task_id).order_by(StatusUpdate.created_at.desc()).all()
     return jsonify([update.to_dict() for update in status_updates])
 
-@app.route('/api/schedule/suggest', methods=['POST'])
+@app.route('/api/schedule/suggestions', methods=['POST'])
 def get_schedule_suggestions():
-    data = request.get_json()
-    task_id = data.get('task_id')
-    
-    if task_id:
-        task = db.session.get(Task, task_id)
-        if not task:
-            return jsonify({'error': 'Task not found'}), 404
-        tasks = [task]
-    else:
-        tasks = Task.query.filter(Task.status != 'Completed').all()
-    
-    if not tasks:
-        return jsonify({'message': 'No tasks to schedule', 'suggestions': []})
-    
     try:
-        suggestions = []
+        data = request.json
+        scheduled_task_ids = data.get('scheduled_task_ids', [])
+        app.logger.debug(f'Already scheduled task IDs: {scheduled_task_ids}')
+        
+        # Get all tasks that are not completed and not already scheduled
+        tasks = Task.query.filter(
+            Task.status != 'Completed',
+            ~Task.id.in_([int(id) for id in scheduled_task_ids])  # Convert string IDs to integers
+        ).all()
+        
+        app.logger.debug(f'Found {len(tasks)} unscheduled tasks')
         for task in tasks:
-            # Consider dependencies
-            dependencies = task.dependencies
-            earliest_start = datetime.now(pytz.UTC)
-            
-            if dependencies:
-                # Find the latest completion time among dependencies
-                latest_dependency = max(
-                    (d.completed_at or datetime.now(pytz.UTC) + timedelta(days=d.estimated_duration/24/60) 
-                     for d in dependencies),
-                    default=earliest_start
-                )
-                earliest_start = max(earliest_start, latest_dependency)
-            
-            # Calculate suggested time slot
-            duration_hours = task.estimated_duration / 60 if task.estimated_duration else 2
-            suggested_time = earliest_start + timedelta(hours=1)  # Add buffer
-            
-            # Format the suggestion
-            suggestions.append({
-                'task': task.title,
+            app.logger.debug(f'Unscheduled task: {task.title} (ID: {task.id}, Status: {task.status})')
+        
+        if not tasks:
+            app.logger.debug('No unscheduled tasks found')
+            return jsonify([])
+        
+        # Get all calendar events for scheduling context
+        calendar_events = Calendar.query.all()
+        app.logger.debug(f'Found {len(calendar_events)} calendar events')
+        
+        # Generate suggestions
+        suggestions = generate_schedule_suggestions(tasks, calendar_events)
+        app.logger.debug(f'Generated {len(suggestions)} suggestions')
+        
+        # Format suggestions for response
+        formatted_suggestions = []
+        for task, suggested_time in suggestions:
+            suggestion = {
                 'task_id': task.id,
+                'task_title': task.title,
                 'suggested_time': suggested_time.isoformat(),
-                'duration': duration_hours,
-                'reason': generate_scheduling_reason(task, dependencies, suggested_time)
-            })
+                'duration': task.estimated_minutes,
+                'reason': generate_scheduling_reason(task, [], suggested_time)
+            }
+            app.logger.debug(f'Formatted suggestion: {suggestion}')
+            formatted_suggestions.append(suggestion)
         
-        return jsonify({'suggestions': suggestions})
-        
+        return jsonify(formatted_suggestions)
     except Exception as e:
-        app.logger.error(f"Error generating schedule suggestions: {str(e)}")
-        return jsonify({'error': 'Failed to generate schedule suggestions'}), 500
+        app.logger.error(f'Error generating schedule suggestions: {str(e)}')
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/tasks/analyze', methods=['GET'])
+@cross_origin()
 def analyze_tasks():
     try:
         # Get all incomplete tasks
@@ -688,10 +703,11 @@ def analyze_tasks():
                 'description': task.description,
                 'status': task.status,
                 'priority': task.priority,
-                'estimated_duration': task.estimated_duration,
+                'estimated_minutes': task.estimated_minutes,
                 'ticket_number': task.ticket_number,
                 'dependencies': [dep.title for dep in dependencies if dep],
-                'project': task.project.name if task.project else None
+                'project': task.project.name if task.project else None,
+                'current_status': task.current_status
             }
             task_data.append(task_info)
         
@@ -705,10 +721,7 @@ def analyze_tasks():
         
     except Exception as e:
         app.logger.error(f"Error analyzing tasks: {str(e)}")
-        return jsonify({
-            'error': 'Failed to analyze tasks',
-            'analysis': 'Error generating analysis. Please try again later.'
-        }), 500
+        return jsonify({'error': 'Failed to analyze tasks', 'analysis': 'Error generating analysis. Please try again later.'}), 500
 
 @app.route('/api/project-status', methods=['GET'])
 def get_project_status():
@@ -732,7 +745,7 @@ def get_project_status():
 @app.route('/api/schedule/approve', methods=['POST'])
 def approve_suggestion():
     """Add an approved AI suggestion to the calendar"""
-    data = request.json
+    data = request.get_json()
     
     try:
         # Get task by ID
@@ -750,51 +763,189 @@ def approve_suggestion():
         if not suggested_time:
             return jsonify({'error': 'Suggested time is required'}), 400
 
-        # Parse the suggested time
-        start_time = datetime.strptime(suggested_time, '%Y-%m-%d %H:%M')
+        try:
+            # Parse the time and ensure it's in MST
+            mst = pytz.timezone('America/Denver')
+            start_time = datetime.fromisoformat(suggested_time.replace('Z', '+00:00'))
+            if start_time.tzinfo is None:
+                start_time = mst.localize(start_time)
+            start_time = start_time.astimezone(mst)
+        except ValueError:
+            return jsonify({'error': 'Invalid date format'}), 400
+
         end_time = start_time + timedelta(minutes=duration)
 
         # Create a new calendar event from the suggestion
         event = Calendar(
             title=task.title,
+            description=f"Scheduled task: {task.description}" if task.description else None,
             start_time=start_time,
             end_time=end_time,
             project_id=task.project_id,
+            task_id=task.id,
             event_type='task'
         )
         
-        # Update task status to scheduled
-        task.scheduled_start = start_time
-        task.scheduled_end = end_time
-        
-        # Add and commit changes
-        db.session.add(event)
-        db.session.commit()
-        
-        return jsonify({
-            'message': 'Task scheduled successfully',
-            'event': {
-                'id': event.id,
-                'title': event.title,
-                'start': event.start_time.isoformat(),
-                'end': event.end_time.isoformat()
-            }
-        })
-        
-    except ValueError as e:
-        app.logger.error(f"Error parsing date/time: {str(e)}")
-        return jsonify({'error': 'Invalid date/time format'}), 400
+        try:
+            # Update task status to scheduled
+            task.status = 'In Progress'
+            task.started_at = datetime.now(pytz.UTC)
+            
+            # Add event and commit changes
+            db.session.add(event)
+            db.session.commit()
+            
+            # Add a status update
+            status_update = StatusUpdate(
+                task_id=task.id,
+                status='In Progress',
+                notes=f'Task scheduled for {start_time.strftime("%Y-%m-%d %H:%M")}'
+            )
+            db.session.add(status_update)
+            db.session.commit()
+            
+            return jsonify({
+                'message': 'Schedule suggestion approved',
+                'event': event.to_dict(),
+                'task': task.to_dict()
+            })
+            
+        except Exception as e:
+            db.session.rollback()
+            app.logger.error(f"Database error while scheduling task: {str(e)}")
+            return jsonify({'error': 'Database error occurred while scheduling task'}), 500
+            
     except Exception as e:
         app.logger.error(f"Error approving schedule suggestion: {str(e)}")
-        return jsonify({'error': 'Failed to schedule task'}), 500
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup', methods=['POST'])
+def create_backup():
+    """Create a backup of the current database state."""
+    try:
+        # Create timestamp for the backup file
+        mst = pytz.timezone('America/Denver')
+        timestamp = datetime.now(mst).strftime('%Y%m%d_%H%M%S')
+        backup_filename = f'backup_{timestamp}.json'
+        
+        # Get all data from database
+        projects = Project.query.all()
+        tasks = Task.query.all()
+        calendar_events = Calendar.query.all()
+        
+        # Create backup data structure
+        backup_data = {
+            'version': '1.0',
+            'timestamp': datetime.now(mst).isoformat(),
+            'projects': [],
+            'tasks': [],
+            'calendar_events': []
+        }
+
+        # Add projects
+        for project in projects:
+            project_data = {
+                'id': project.id,
+                'name': project.name,
+                'description': project.description,
+                'status': project.status,
+                'priority': project.priority,
+                'color': project.color,
+                'created_at': project.created_at.isoformat() if project.created_at else None
+            }
+            backup_data['projects'].append(project_data)
+
+        # Add tasks
+        for task in tasks:
+            task_data = {
+                'id': task.id,
+                'title': task.title,
+                'description': task.description,
+                'status': task.status,
+                'current_status': task.current_status,
+                'priority': task.priority,
+                'estimated_minutes': task.estimated_minutes,
+                'project_id': task.project_id,
+                'ticket_number': task.ticket_number,
+                'created_at': task.created_at.isoformat() if task.created_at else None,
+                'started_at': task.started_at.isoformat() if task.started_at else None,
+                'completed_at': task.completed_at.isoformat() if task.completed_at else None,
+                'dependencies': [dep.id for dep in task.dependencies] if task.dependencies else []
+            }
+            backup_data['tasks'].append(task_data)
+
+        # Add calendar events
+        for event in calendar_events:
+            event_data = {
+                'id': event.id,
+                'title': event.title,
+                'description': event.description,
+                'start_time': event.start_time.isoformat() if event.start_time else None,
+                'end_time': event.end_time.isoformat() if event.end_time else None,
+                'project_id': event.project_id,
+                'task_id': event.task_id,
+                'event_type': event.event_type
+            }
+            backup_data['calendar_events'].append(event_data)
+        
+        # Create backups directory if it doesn't exist
+        backup_dir = os.path.join(app.root_path, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # Save backup file
+        backup_path = os.path.join(backup_dir, backup_filename)
+        with open(backup_path, 'w', encoding='utf-8') as f:
+            json.dump(backup_data, f, indent=2, ensure_ascii=False)
+        
+        app.logger.info(f"Backup created successfully: {backup_filename}")
+        
+        # Return backup info without download URL
+        return jsonify({
+            'message': 'Backup created successfully',
+            'filename': backup_filename
+        })
+    
+    except Exception as e:
+        app.logger.error(f"Error creating backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup/download/<filename>')
+def download_backup(filename):
+    """Download a specific backup file."""
+    try:
+        backup_dir = os.path.join(app.root_path, 'backups')
+        return send_from_directory(
+            backup_dir, 
+            filename,
+            as_attachment=True,
+            mimetype='application/json'
+        )
+    except Exception as e:
+        app.logger.error(f"Error downloading backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/api/backups', methods=['GET'])
-def get_backups():
-    """List all available database backups."""
+def list_backups():
+    """List all available backups."""
     try:
-        backups = list_backups()
-        app.logger.info(f"Found {len(backups)} backups")
-        return jsonify({'backups': backups})
+        backup_dir = os.path.join(app.root_path, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        backups = []
+        for filename in os.listdir(backup_dir):
+            if filename.endswith('.json'):
+                file_path = os.path.join(backup_dir, filename)
+                stat = os.stat(file_path)
+                backups.append({
+                    'filename': filename,
+                    'created_at': datetime.fromtimestamp(stat.st_mtime).isoformat(),
+                    'size': stat.st_size
+                })
+        
+        # Sort backups by creation time, newest first
+        backups.sort(key=lambda x: x['created_at'], reverse=True)
+        
+        return jsonify(backups)
     except Exception as e:
         app.logger.error(f"Error listing backups: {str(e)}")
         return jsonify({'error': str(e)}), 500
@@ -815,25 +966,148 @@ def create_backup_endpoint():
         app.logger.error(f"Error creating backup: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
-@app.route('/api/backups/restore/<filename>', methods=['POST'])
-def restore_backup_endpoint(filename):
+@app.route('/api/backup/restore', methods=['POST'])
+def restore_backup_endpoint():
     """Restore database from a specific backup file."""
     try:
-        app.logger.info(f"Attempting to restore backup: {filename}")
-        backup_path = os.path.join('backups', filename)
+        filename = request.args.get('filename')
+        if not filename:
+            return jsonify({'error': 'No filename provided'}), 400
+            
+        app.logger.info(f"Starting restore of backup: {filename}")
+        backup_dir = os.path.join(app.root_path, 'backups')
+        backup_path = os.path.join(backup_dir, filename)
+        
+        app.logger.info(f"Checking backup file: {backup_path}")
         if not os.path.exists(backup_path):
             app.logger.error(f"Backup file not found: {backup_path}")
             return jsonify({'error': 'Backup file not found'}), 404
 
-        success = restore_backup(backup_path)
-        if success:
+        app.logger.info("Reading backup file...")
+        try:
+            with open(backup_path, 'r', encoding='utf-8') as f:
+                content = f.read()
+                app.logger.info(f"File content: {content[:200]}...")  # Log first 200 chars
+                backup_data = json.loads(content)
+        except json.JSONDecodeError as e:
+            app.logger.error(f"JSON decode error: {str(e)}")
+            app.logger.error(f"Error at position {e.pos}, line {e.lineno}, column {e.colno}")
+            return jsonify({'error': f'Invalid backup format: {str(e)}'}), 400
+        except Exception as e:
+            app.logger.error(f"Error reading backup file: {str(e)}")
+            return jsonify({'error': f'Error reading backup file: {str(e)}'}), 500
+
+        app.logger.info("Verifying backup version...")
+        if 'version' not in backup_data:
+            app.logger.error("Missing version in backup data")
+            return jsonify({'error': 'Invalid backup format: missing version'}), 400
+        
+        app.logger.info("Clearing existing data...")
+        try:
+            db.session.query(Project).delete()
+            db.session.query(Task).delete()
+            db.session.query(Calendar).delete()
+            db.session.commit()
+        except Exception as e:
+            app.logger.error(f"Error clearing data: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error clearing existing data: {str(e)}'}), 500
+
+        app.logger.info("Restoring projects...")
+        project_map = {}  # Map old IDs to new projects
+        try:
+            for project_data in backup_data['projects']:
+                project = Project(
+                    name=project_data['name'],
+                    description=project_data.get('description'),
+                    status=project_data.get('status', 'In Progress'),
+                    priority=project_data.get('priority', 2),
+                    color=project_data.get('color')
+                )
+                if project_data.get('created_at'):
+                    project.created_at = datetime.fromisoformat(project_data['created_at'])
+                db.session.add(project)
+                db.session.flush()
+                project_map[project_data['id']] = project
+        except Exception as e:
+            app.logger.error(f"Error restoring projects: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error restoring projects: {str(e)}'}), 500
+
+        app.logger.info("Restoring tasks...")
+        task_map = {}  # Map old IDs to new tasks
+        try:
+            for task_data in backup_data.get('tasks', []):
+                task = Task(
+                    title=task_data['title'],
+                    description=task_data.get('description'),
+                    status=task_data.get('status', 'Not Started'),
+                    current_status=task_data.get('current_status'),
+                    priority=task_data.get('priority', 2),
+                    estimated_minutes=task_data.get('estimated_minutes'),
+                    project_id=project_map[task_data['project_id']].id if task_data.get('project_id') and task_data['project_id'] in project_map else None,
+                    ticket_number=task_data.get('ticket_number')
+                )
+                if task_data.get('created_at'):
+                    task.created_at = datetime.fromisoformat(task_data['created_at'])
+                if task_data.get('started_at'):
+                    task.started_at = datetime.fromisoformat(task_data['started_at'])
+                if task_data.get('completed_at'):
+                    task.completed_at = datetime.fromisoformat(task_data['completed_at'])
+                
+                db.session.add(task)
+                db.session.flush()
+                task_map[task_data['id']] = task
+        except Exception as e:
+            app.logger.error(f"Error restoring tasks: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error restoring tasks: {str(e)}'}), 500
+
+        app.logger.info("Restoring task dependencies...")
+        try:
+            for task_data in backup_data.get('tasks', []):
+                if task_data.get('dependencies'):
+                    task = task_map[task_data['id']]
+                    for dep_id in task_data['dependencies']:
+                        if dep_id in task_map:
+                            task.dependencies.append(task_map[dep_id])
+        except Exception as e:
+            app.logger.error(f"Error restoring task dependencies: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error restoring task dependencies: {str(e)}'}), 500
+
+        app.logger.info("Restoring calendar events...")
+        try:
+            for event_data in backup_data.get('calendar_events', []):
+                event = Calendar(
+                    title=event_data['title'],
+                    description=event_data.get('description'),
+                    start_time=datetime.fromisoformat(event_data['start_time']) if event_data.get('start_time') else None,
+                    end_time=datetime.fromisoformat(event_data['end_time']) if event_data.get('end_time') else None,
+                    project_id=project_map[event_data['project_id']].id if event_data.get('project_id') and event_data['project_id'] in project_map else None,
+                    task_id=task_map[event_data['task_id']].id if event_data.get('task_id') and event_data['task_id'] in task_map else None,
+                    event_type=event_data.get('event_type')
+                )
+                db.session.add(event)
+        except Exception as e:
+            app.logger.error(f"Error restoring calendar events: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error restoring calendar events: {str(e)}'}), 500
+
+        app.logger.info("Committing changes...")
+        try:
+            db.session.commit()
             app.logger.info("Database restored successfully")
             return jsonify({'message': 'Database restored successfully'})
-        else:
-            app.logger.error("Failed to restore database")
-            return jsonify({'error': 'Failed to restore database'}), 500
+        except Exception as e:
+            app.logger.error(f"Error committing changes: {str(e)}")
+            db.session.rollback()
+            return jsonify({'error': f'Error committing changes: {str(e)}'}), 500
+        
     except Exception as e:
-        app.logger.error(f"Error restoring backup: {str(e)}")
+        app.logger.error(f"Unexpected error restoring backup: {str(e)}")
+        if 'db' in locals() and hasattr(db, 'session'):
+            db.session.rollback()
         return jsonify({'error': str(e)}), 500
 
 @app.route('/api/status-report', methods=['GET'])
@@ -864,7 +1138,8 @@ def generate_status_report():
                     'status': task.status,
                     'priority': task.priority_label,
                     'latest_update': latest_update.notes if latest_update else None,
-                    'latest_update_time': latest_update.created_at.isoformat() if latest_update else None
+                    'latest_update_time': latest_update.created_at.isoformat() if latest_update else None,
+                    'current_status': task.current_status
                 })
             
             project_data.append({
@@ -875,7 +1150,7 @@ def generate_status_report():
                     'in_progress_tasks': in_progress_tasks,
                     'not_started_tasks': not_started_tasks,
                     'on_hold_tasks': on_hold_tasks,
-                    'completion_rate': round((completed_tasks / total_tasks * 100) if total_tasks > 0 else 0, 2)
+                    'completion_rate': (completed_tasks / total_tasks * 100) if total_tasks > 0 else 0
                 },
                 'tasks': task_details
             })
@@ -932,7 +1207,116 @@ Use markdown formatting for better readability."""
         app.logger.error(f"Error generating status report: {str(e)}")
         return jsonify({'error': str(e)}), 500
 
+@app.route('/api/backup/upload', methods=['POST'])
+def upload_backup():
+    """Upload and validate a backup file."""
+    try:
+        if 'file' not in request.files:
+            return jsonify({'error': 'No file provided'}), 400
+            
+        file = request.files['file']
+        if not file.filename:
+            return jsonify({'error': 'No file selected'}), 400
+            
+        if not file.filename.endswith('.json'):
+            return jsonify({'error': 'Only JSON files are allowed'}), 400
+            
+        # Create backups directory if it doesn't exist
+        backup_dir = os.path.join(app.root_path, 'backups')
+        os.makedirs(backup_dir, exist_ok=True)
+        
+        # Read and validate the backup file
+        try:
+            backup_data = json.loads(file.read().decode('utf-8'))
+            
+            # Validate backup structure
+            required_keys = ['version', 'timestamp', 'projects', 'tasks', 'calendar_events']
+            if not all(key in backup_data for key in required_keys):
+                return jsonify({'error': 'Invalid backup format: missing required fields'}), 400
+                
+            if backup_data.get('version') != '1.0':
+                return jsonify({'error': 'Unsupported backup version'}), 400
+                
+            # Generate a new filename with current timestamp
+            mst = pytz.timezone('America/Denver')
+            timestamp = datetime.now(mst).strftime('%Y%m%d_%H%M%S')
+            filename = f'backup_{timestamp}.json'
+            
+            # Save the file
+            backup_path = os.path.join(backup_dir, filename)
+            with open(backup_path, 'w', encoding='utf-8') as f:
+                json.dump(backup_data, f, indent=2, ensure_ascii=False)
+            
+            app.logger.info(f"Backup file uploaded successfully: {filename}")
+            return jsonify({
+                'message': 'Backup file uploaded successfully',
+                'filename': filename
+            })
+            
+        except json.JSONDecodeError as e:
+            app.logger.error(f"Invalid JSON format: {str(e)}")
+            return jsonify({'error': 'Invalid JSON format'}), 400
+            
+        except Exception as e:
+            app.logger.error(f"Error validating backup file: {str(e)}")
+            return jsonify({'error': 'Invalid backup format'}), 400
+            
+    except Exception as e:
+        app.logger.error(f"Error uploading backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/backup/<filename>', methods=['DELETE'])
+def delete_backup(filename):
+    """Delete a backup file."""
+    try:
+        # Validate filename
+        if not filename.endswith('.json'):
+            return jsonify({'error': 'Invalid backup file'}), 400
+
+        # Ensure the file is in the backups directory
+        backup_dir = os.path.join(app.root_path, 'backups')
+        backup_path = os.path.join(backup_dir, filename)
+        
+        # Check if file exists and is within backups directory
+        if not os.path.exists(backup_path) or not os.path.isfile(backup_path):
+            return jsonify({'error': 'Backup file not found'}), 404
+            
+        # Ensure the file is within the backups directory (security check)
+        real_backup_dir = os.path.realpath(backup_dir)
+        real_backup_path = os.path.realpath(backup_path)
+        if not real_backup_path.startswith(real_backup_dir):
+            return jsonify({'error': 'Invalid backup path'}), 400
+
+        # Delete the file
+        os.remove(backup_path)
+        app.logger.info(f"Backup file deleted: {filename}")
+        
+        return jsonify({'message': 'Backup deleted successfully'})
+        
+    except Exception as e:
+        app.logger.error(f"Error deleting backup: {str(e)}")
+        return jsonify({'error': str(e)}), 500
+
+def create_default_project():
+    try:
+        app.logger.info('Checking for default project...')
+        if not Project.query.first():
+            app.logger.info('No projects found, creating default project')
+            default_project = Project(
+                name='Default Project',
+                description='Default project for tasks',
+                color='#6c757d'  # Bootstrap secondary color
+            )
+            db.session.add(default_project)
+            db.session.commit()
+            app.logger.info('Created default project with ID: %d', default_project.id)
+        else:
+            app.logger.info('Default project already exists')
+    except Exception as e:
+        app.logger.error(f'Error creating default project: {str(e)}')
+
 if __name__ == '__main__':
     with app.app_context():
         db.create_all()
-    app.run(host='0.0.0.0', port=5001)
+        create_default_project()  # Create default project after tables are created
+    app.run(host='0.0.0.0', port=5001, debug=True)
